@@ -1,0 +1,22 @@
+# Ambientes e caches
+.venv/
+__pycache__/
+.pytest_cache/
+.vscode/
+
+# Ferramentas locais e binários
+tools/ffmpeg/
+
+# Modelos neurais e pesos pesados (devem ser baixados via scripts/download_models.py)
+models/*.onnx
+models/*.pth
+models/*.zip
+models/models/
+*.onnx
+*.zip
+
+# Saídas e arquivos temporários de teste
+output/*
+logs/*
+temp/*
+!*/.gitkeep

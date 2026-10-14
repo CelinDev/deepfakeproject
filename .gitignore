@@ -1,0 +1,32 @@
+# Ambientes virtuais e caches
+.venv/
+__pycache__/
+.pytest_cache/
+.vscode/
+projeto_pytorch/
+
+# Ferramentas locais e binários
+tools/ffmpeg/
+FaceLab/tools/ffmpeg/
+
+# Modelos neurais pesados e zips (devem ser baixados via script)
+*.onnx
+*.pth
+*.zip
+models/*.onnx
+models/*.pth
+models/*.zip
+models/models/
+FaceLab/models/*.onnx
+FaceLab/models/*.pth
+FaceLab/models/*.zip
+FaceLab/models/models/
+
+# Saídas e temporários
+output/*
+logs/*
+temp/*
+FaceLab/output/*
+FaceLab/logs/*
+FaceLab/temp/*
+!*/.gitkeep

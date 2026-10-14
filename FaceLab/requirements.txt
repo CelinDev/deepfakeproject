@@ -1,0 +1,27 @@
+# FaceLab — dependências
+#
+# IMPORTANTE: o PyTorch NÃO está aqui porque precisa vir do índice CUDA:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#
+# numpy: quadros de vídeo são arrays numpy
+numpy
+# opencv-python: leitura/escrita de quadros e operações de imagem
+opencv-python
+# onnxruntime-gpu: executa os modelos ONNX (detecção e swap).
+# FIXADO em 1.23.2: as versões >= 1.24 usam CUDA 13, que não suporta GPUs
+# Pascal (GTX 10xx) nem combina com as DLLs CUDA 12 do PyTorch cu126.
+onnxruntime-gpu==1.23.2
+# insightface: detecção (SCRFD), landmarks e embeddings (ArcFace).
+# Pesos buffalo_l: licença NÃO comercial. Ver models/README.md.
+# ATENÇÃO: o insightface declara dependência do 'onnxruntime' (CPU). Se ele for
+# instalado junto, sobrescreve o GPU. Instale com --no-deps (ver README).
+insightface==2.1
+scikit-image
+scipy
+requests
+tqdm
+onnx
+# pytest: testes automatizados
+pytest
+# PySide6: interface gráfica desktop (Fase 5)
+PySide6

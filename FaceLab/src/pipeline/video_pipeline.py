@@ -139,7 +139,9 @@ class VideoPipeline:
             logger.info("Extraindo rosto de referência...")
             source_face = self.extract_source_face(ref_path)
 
-        if ref_path is not None and source_face is not None and source_face.landmarks is not None:
+        # Transfere a paleta de cores característica da fonte APENAS se for o preset de Zumbi
+        is_zombie_ref = (ref_path is not None) and ("zombie" in str(ref_path).lower())
+        if is_zombie_ref and ref_path is not None and source_face is not None and source_face.landmarks is not None:
             ref_img = cv2.imread(str(ref_path))
             if ref_img is not None:
                 source_crop, _ = FaceAligner.align_crop(

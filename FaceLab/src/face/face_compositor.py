@@ -65,12 +65,12 @@ class FaceCompositor:
         # Matriz inversa (espaço do crop -> espaço do quadro original)
         inv_affine = cv2.invertAffineTransform(affine_matrix)
 
-        # Máscara anatômica refinada:
-        # Em vez de oval estático que invade queixo e testa, usamos elipse ponderada com centro ligeiramente rebaixado
-        # onde ficam olhos, nariz e boca canônicos (padrão ArcFace)
+        # Máscara anatômica expandida:
+        # Cobre toda a estrutura facial, abrangendo 100% da testa até a raiz do cabelo,
+        # têmporas, olhos e queixo, garantindo cobertura total da paleta e efeito.
         mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-        center = (crop_w // 2, int(crop_h * 0.58))
-        axes = (int(crop_w * 0.34), int(crop_h * 0.40))
+        center = (crop_w // 2, int(crop_h * 0.50))
+        axes = (int(crop_w * 0.44), int(crop_h * 0.48))
         cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
 
         if self.erode_amount > 0:

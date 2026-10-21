@@ -48,9 +48,11 @@ FACE_PARSER_CLASSES = {
     18: "hat",       # Chapéu / Boné
 }
 
-# Classes de oclusão natural (elementos do alvo que devem cobrir o rosto trocado para máximo realismo)
+# Classes de oclusão natural (elementos anatômicos que cobrem a face: cabelo e orelhas).
+# NOTA: Removemos a classe 6 (óculos) para permitir que os olhos e a área ocular recebam
+# integralmente o efeito fotorrealista (ex: olhos leitosos, olheiras cadavéricas e cor de zumbi)
+# mesmo quando o usuário estiver usando óculos de grau ou sol.
 NATURAL_HAIR_AND_OCCLUSION_CLASSES = frozenset({
-    6,   # óculos
     7,   # orelha esquerda
     8,   # orelha direita
     9,   # brincos

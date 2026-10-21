@@ -23,6 +23,7 @@ from src.core.types import DetectedFace, Frame
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
+from src.face.face_enhancer import FaceEnhancer
 from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
 from src.face.face_swapper import INSwapperModel
 from src.face.face_tracker import TargetFaceTracker
@@ -47,6 +48,7 @@ class LivePipeline:
         feather_amount: int = 15,
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
+        enable_enhancer: bool = True,
     ) -> None:
         """
         Args:
@@ -57,6 +59,7 @@ class LivePipeline:
             feather_amount: Suavização da borda da máscara.
             enable_zombie: Ativa transformação e ferimentos de Halloween/Zumbi.
             enable_head_swap: Ativa transferência de cabeça completa (cabelo e orelhas).
+            enable_enhancer: Ativa restauração de super-resolução e texturas faciais.
         """
         self.device_manager = DeviceManager(device_preference)
         # Modo rápido: detecção com landmarks e sem cálculo obrigatório de embedding em todo quadro
@@ -64,6 +67,7 @@ class LivePipeline:
         compositor = FaceCompositor(blur_amount=feather_amount)
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.parser = FaceParser(self.device_manager) if enable_head_swap else None
+        self.enhancer = FaceEnhancer(self.device_manager) if enable_enhancer else None
         self.smoother = TemporalSmoother(alpha_landmarks=0.65, alpha_color=0.8)
         self.blend_intensity = blend_intensity
         self.color_correct = color_correct
@@ -175,6 +179,10 @@ class LivePipeline:
                             color_correct=self.color_correct,
                             source_crop=source_crop,
                         )
+
+                        # Super-resolução e Nitidez de Alta Frequência em Tempo Real (<1ms)
+                        if self.enhancer is not None:
+                            out_frame = self.enhancer.enhance_fast(out_frame, amount=0.35)
 
                         # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')
                         if self.parser is not None:

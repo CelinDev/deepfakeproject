@@ -84,6 +84,7 @@ class INSwapperModel(FaceSwapper):
         enhancer: FaceEnhancer | None = None,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
+        source_crop: np.ndarray | None = None,
     ) -> np.ndarray:
         if target_face.landmarks is None:
             return target_frame  # Sem marcos faciais, impossível alinhar
@@ -121,11 +122,18 @@ class INSwapperModel(FaceSwapper):
         img_fake = preds.transpose((0, 2, 3, 1))[0]
         fake_bgr = np.clip(img_fake * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
 
-        # 6. Restauração facial / Super-resolução opcional (GFPGAN)
+        # 6. Se fornecido source_crop (ex: tom esverdeado/mortiço de zumbi da fonte),
+        # transfere a paleta de cores característica da fonte antes da composição
+        if source_crop is not None:
+            fake_bgr = self.compositor.match_color_hist(fake_bgr, source_crop, smoother=smoother)
+            # Evita que o compositor sobreponha a iluminação do alvo em cima do tom da fonte
+            color_correct = False
+
+        # 7. Restauração facial / Super-resolução opcional (GFPGAN)
         if enhancer is not None:
             fake_bgr = enhancer.enhance(fake_bgr)
 
-        # 7. Composição sobre o frame original
+        # 8. Composição sobre o frame original
         return self.compositor.composite(
             original_frame=target_frame,
             fake_crop=fake_bgr,

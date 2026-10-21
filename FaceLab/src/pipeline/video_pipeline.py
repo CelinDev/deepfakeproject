@@ -24,6 +24,7 @@ import numpy as np
 
 from config.settings import OUTPUT_DIR, ZOMBIE_REFERENCE_IMAGE
 from src.core.types import DetectedFace
+from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_enhancer import FaceEnhancer
@@ -126,6 +127,7 @@ class VideoPipeline:
         )
 
         source_face: DetectedFace | None = None
+        source_crop: np.ndarray | None = None
         ref_path: Path | None = None
         if self.enable_zombie and source_image_path is None:
             if ZOMBIE_REFERENCE_IMAGE.is_file():
@@ -136,6 +138,13 @@ class VideoPipeline:
             ref_path = validate_image_path(source_image_path)
             logger.info("Extraindo rosto de referência...")
             source_face = self.extract_source_face(ref_path)
+
+        if ref_path is not None and source_face is not None and source_face.landmarks is not None:
+            ref_img = cv2.imread(str(ref_path))
+            if ref_img is not None:
+                source_crop, _ = FaceAligner.align_crop(
+                    ref_img, source_face.landmarks, crop_size=self.swapper.input_size[0]
+                )
 
         source = VideoFileSource(v_path)
         info = source.info
@@ -188,6 +197,7 @@ class VideoPipeline:
                             enhancer=self.enhancer,
                             blend_intensity=self.blend_intensity,
                             color_correct=self.color_correct,
+                            source_crop=source_crop,
                         )
 
                         # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')

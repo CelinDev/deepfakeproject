@@ -20,6 +20,7 @@ import numpy as np
 from config.settings import ZOMBIE_REFERENCE_IMAGE
 from src.core.interfaces import FrameSource
 from src.core.types import DetectedFace, Frame
+from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
@@ -114,6 +115,7 @@ class LivePipeline:
     ) -> None:
         """Inicia o laço de captura, troca facial e renderização em tempo real."""
         source_face: DetectedFace | None = None
+        source_crop: np.ndarray | None = None
         ref_path: Path | None = None
         if self.enable_zombie and source_image_path is None:
             if ZOMBIE_REFERENCE_IMAGE.is_file():
@@ -123,6 +125,13 @@ class LivePipeline:
         elif source_image_path is not None:
             ref_path = validate_image_path(source_image_path)
             source_face = self.load_source_face(ref_path)
+
+        if ref_path is not None and source_face is not None and source_face.landmarks is not None:
+            ref_img = cv2.imread(str(ref_path))
+            if ref_img is not None:
+                source_crop, _ = FaceAligner.align_crop(
+                    ref_img, source_face.landmarks, crop_size=self.swapper.input_size[0]
+                )
         source = camera_source or WebcamSource(camera_index=camera_index, width=width, height=height)
 
         tracker: TargetFaceTracker | None = None
@@ -164,6 +173,7 @@ class LivePipeline:
                             smoother=self.smoother,
                             blend_intensity=self.blend_intensity,
                             color_correct=self.color_correct,
+                            source_crop=source_crop,
                         )
 
                         # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')

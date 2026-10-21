@@ -33,7 +33,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import OUTPUT_DIR, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_VIDEO_EXTENSIONS
+from config.settings import (
+    CYBORG_REFERENCE_IMAGE,
+    OUTPUT_DIR,
+    SUPPORTED_IMAGE_EXTENSIONS,
+    SUPPORTED_VIDEO_EXTENSIONS,
+    VAMPIRE_REFERENCE_IMAGE,
+    ZOMBIE_REFERENCE_IMAGE,
+)
 from src.inference.device_manager import DevicePreference
 from src.interface.theme import DARK_BLUE_THEME
 from src.interface.worker import LiveWebcamWorker, VideoWorker
@@ -191,8 +198,22 @@ class MainWindow(QWidget):
         self.chk_color_correct = QCheckBox("Correção de Iluminação")
         self.chk_color_correct.setChecked(True)
         self.chk_color_correct.setToolTip("Harmoniza temperatura de cor e brilho do novo rosto com a cena original.")
+        self.chk_color_correct.toggled.connect(self._on_color_correct_toggled)
         vbox_color.addWidget(self.chk_color_correct)
         c_layout.addLayout(vbox_color)
+
+        # Dropdown de Presets Cinematográficos
+        vbox_presets = QVBoxLayout()
+        vbox_presets.setSpacing(4)
+        vbox_presets.addWidget(QLabel("🎭 Presets Cinematográficos:"))
+        self.combo_presets = QComboBox()
+        self.combo_presets.addItem("👤 Personalizado (Foto Carregada)", None)
+        self.combo_presets.addItem("🧟 Zumbi Hiper-realista", str(ZOMBIE_REFERENCE_IMAGE))
+        self.combo_presets.addItem("🧛 Vampiro Nobre", str(VAMPIRE_REFERENCE_IMAGE))
+        self.combo_presets.addItem("🤖 Ciborgue Futurista", str(CYBORG_REFERENCE_IMAGE))
+        self.combo_presets.currentIndexChanged.connect(self._on_preset_changed)
+        vbox_presets.addWidget(self.combo_presets)
+        c_layout.addLayout(vbox_presets)
 
         # Botão Especial de Halloween: Modo Zumbi
         vbox_zombie = QVBoxLayout()
@@ -359,28 +380,61 @@ class MainWindow(QWidget):
         cam_view_layout.addWidget(self.webcam_display)
         layout.addWidget(cam_view_box)
 
-    # --- Callbacks dos Sliders Dinâmicos ---
+    # --- Callbacks dos Sliders Dinâmicos & Presets ---
+    def _on_preset_changed(self, index: int) -> None:
+        """Carrega instantaneamente o preset selecionado (Zumbi, Vampiro, Ciborgue)."""
+        preset_path = self.combo_presets.currentData()
+        if preset_path:
+            p = Path(preset_path)
+            if p.is_file():
+                self.image_path = p
+                img = cv2.imread(str(self.image_path))
+                if img is not None:
+                    h, w = img.shape[:2]
+                    self.img_preview.setPixmap(cv2_to_pixmap(img, max_size=(160, 160)))
+                    self.lbl_img_info.setText(
+                        f"<b>Preset Ativo:</b> {self.combo_presets.currentText()}<br><b>Resolução:</b> {w}x{h} px"
+                    )
+
+                # Se o usuário escolheu o preset Zumbi, sincroniza o botão especial
+                if "zombie" in p.name.lower():
+                    self.btn_zombie.setChecked(True)
+                else:
+                    self.btn_zombie.setChecked(False)
+
+                # Atualiza a webcam ao vivo se estiver rodando
+                if self.webcam_worker:
+                    self.webcam_worker.image_path = self.image_path
+                    if self.webcam_worker.pipeline:
+                        try:
+                            new_face = self.webcam_worker.pipeline.load_source_face(self.image_path, det_thresh=0.2)
+                            # Atualiza dinamicamente a referência de swap na thread
+                            # O pipeline recarregará no próximo frame
+                        except Exception as e:
+                            logger.warning("Erro ao recarregar face do preset: %s", e)
+
     def _on_zombie_toggled(self, checked: bool) -> None:
         if checked:
             self.btn_zombie.setText("🧟 MODO ZUMBI: ATIVO")
         else:
             self.btn_zombie.setText("🧟 MODO ZUMBI: OFF")
         if self.webcam_worker:
-            self.webcam_worker.enable_zombie = checked
-            if self.webcam_worker.pipeline:
-                self.webcam_worker.pipeline.enable_zombie = checked
+            self.webcam_worker.update_params(enable_zombie=checked)
 
     def _on_blend_changed(self, value: int) -> None:
         self.lbl_blend.setText(f"Intensidade do Swap: <b>{value}%</b>")
         if self.webcam_worker:
-            self.webcam_worker.blend_intensity = value / 100.0
+            self.webcam_worker.update_params(blend_intensity=value / 100.0)
 
     def _on_feather_changed(self, value: int) -> None:
         val = value if value % 2 != 0 else value + 1
         self.lbl_feather.setText(f"Suavização Anatômica: <b>{val} px</b>")
-        if self.webcam_worker and self.webcam_worker.pipeline:
-            self.webcam_worker.feather_amount = val
-            self.webcam_worker.pipeline.swapper.compositor.blur_amount = val
+        if self.webcam_worker:
+            self.webcam_worker.update_params(feather_amount=val)
+
+    def _on_color_correct_toggled(self, checked: bool) -> None:
+        if self.webcam_worker:
+            self.webcam_worker.update_params(color_correct=checked)
 
     # --- Seleção de Arquivos de Mídia ---
     def _select_video(self) -> None:

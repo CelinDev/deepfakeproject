@@ -80,6 +80,25 @@ class LivePipeline:
         """Interrompe a execução contínua da webcam."""
         self._is_running = False
 
+    def update_params(
+        self,
+        blend_intensity: float | None = None,
+        color_correct: bool | None = None,
+        feather_amount: int | None = None,
+        enable_zombie: bool | None = None,
+    ) -> None:
+        """Atualiza parâmetros de renderização dinamicamente em tempo real sem reiniciar o stream."""
+        if blend_intensity is not None:
+            self.blend_intensity = float(blend_intensity)
+        if color_correct is not None:
+            self.color_correct = bool(color_correct)
+        if feather_amount is not None:
+            k = int(feather_amount)
+            if hasattr(self.swapper, "compositor"):
+                self.swapper.compositor.blur_amount = k if k % 2 != 0 else k + 1
+        if enable_zombie is not None:
+            self.enable_zombie = bool(enable_zombie)
+
     def load_source_face(self, source_image_path: str | Path, det_thresh: float = 0.5) -> DetectedFace:
         """Extrai o embedding e marcos do rosto novo de referência."""
         path = validate_image_path(source_image_path)

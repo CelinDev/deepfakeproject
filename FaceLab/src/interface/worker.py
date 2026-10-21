@@ -111,6 +111,22 @@ class LiveWebcamWorker(QObject):
         if self.pipeline:
             self.pipeline.stop()
 
+    def update_params(
+        self,
+        blend_intensity: float | None = None,
+        color_correct: bool | None = None,
+        feather_amount: int | None = None,
+        enable_zombie: bool | None = None,
+    ) -> None:
+        """Repassa parâmetros dinâmicos em tempo real para o pipeline ativo."""
+        if self.pipeline:
+            self.pipeline.update_params(
+                blend_intensity=blend_intensity,
+                color_correct=color_correct,
+                feather_amount=feather_amount,
+                enable_zombie=enable_zombie,
+            )
+
     def run(self) -> None:
         """Inicia a transmissão ao vivo."""
         try:

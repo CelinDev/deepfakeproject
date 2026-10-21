@@ -18,6 +18,8 @@ TEMP_DIR: Path = PROJECT_ROOT / "temp"
 TOOLS_DIR: Path = PROJECT_ROOT / "tools"
 ASSETS_DIR: Path = PROJECT_ROOT / "assets"
 ZOMBIE_REFERENCE_IMAGE: Path = ASSETS_DIR / "zombie_reference.png"
+VAMPIRE_REFERENCE_IMAGE: Path = ASSETS_DIR / "vampire_reference.png"
+CYBORG_REFERENCE_IMAGE: Path = ASSETS_DIR / "cyborg_reference.png"
 BISENET_MODEL_PATH: Path = MODELS_DIR / "bisenet_resnet_34.onnx"
 
 # FFmpeg local do projeto (tools/ffmpeg/bin) tem prioridade sobre o PATH.

@@ -65,22 +65,21 @@ class FaceCompositor:
         # Matriz inversa (espaço do crop -> espaço do quadro original)
         inv_affine = cv2.invertAffineTransform(affine_matrix)
 
-        # Máscara anatômica expandida:
-        # Cobre toda a estrutura facial, abrangendo 100% da testa até a raiz do cabelo,
-        # têmporas, olhos e queixo, garantindo cobertura total da paleta e efeito.
+        # Máscara anatômica refinada:
+        # Cobre a estrutura facial até a raiz do cabelo sem transbordar para o fundo.
         mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-        center = (crop_w // 2, int(crop_h * 0.50))
-        axes = (int(crop_w * 0.44), int(crop_h * 0.48))
+        center = (crop_w // 2, int(crop_h * 0.49))
+        axes = (int(crop_w * 0.40), int(crop_h * 0.45))
         cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
 
-        if self.erode_amount > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.erode_amount, self.erode_amount))
-            mask = cv2.erode(mask, kernel, iterations=1)
-
-        # Suavização com duplo Gaussian blur para transição sem corte abrupto
+        # Suavização gaussiana
         blur_k = self.blur_amount if self.blur_amount % 2 != 0 else self.blur_amount + 1
         mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
-        mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
+
+        # Supressão de cauda/halo (Anti-Aura): corta valores residuais muito baixos nas bordas
+        # que provocavam vazamento esverdeado/aura fora do esquadro do rosto
+        mask = np.clip((mask - 0.08) / (0.92 - 0.08), 0.0, 1.0)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
 
         # OTIMIZAÇÃO (Fase 6): calcula a Região de Interesse (ROI) onde o rosto se projeta no frame.
         # Em vez de aplicar warpAffine e mistura alfa na imagem inteira de 1920x1080 (que custa ~100ms),

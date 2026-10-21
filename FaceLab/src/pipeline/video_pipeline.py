@@ -27,7 +27,7 @@ from src.core.types import DetectedFace
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_enhancer import FaceEnhancer
-from src.face.face_parser import HAIR_AND_EARS_CLASSES, FaceParser
+from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
 from src.face.face_swapper import INSwapperModel
 from src.face.face_tracker import TargetFaceTracker
 from src.face.temporal_smoother import TemporalSmoother
@@ -126,9 +126,6 @@ class VideoPipeline:
         )
 
         source_face: DetectedFace | None = None
-        source_image: np.ndarray | None = None
-        source_hair_mask: np.ndarray | None = None
-
         ref_path: Path | None = None
         if self.enable_zombie and source_image_path is None:
             if ZOMBIE_REFERENCE_IMAGE.is_file():
@@ -139,13 +136,6 @@ class VideoPipeline:
             ref_path = validate_image_path(source_image_path)
             logger.info("Extraindo rosto de referência...")
             source_face = self.extract_source_face(ref_path)
-
-        if ref_path is not None and self.parser is not None and source_face is not None:
-            source_image = cv2.imread(str(ref_path))
-            if source_image is not None:
-                source_hair_mask = self.parser.extract_mask(
-                    source_image, classes=HAIR_AND_EARS_CLASSES, feather=7
-                )
 
         source = VideoFileSource(v_path)
         info = source.info
@@ -200,15 +190,13 @@ class VideoPipeline:
                             color_correct=self.color_correct,
                         )
 
-                        # Segmentação e Fusão da Cabeça Completa (Cabelo, Orelhas, Brincos)
-                        if self.parser is not None and source_image is not None:
-                            out_image = self.parser.blend_hair_and_ears(
-                                target_frame=out_image,
-                                source_image=source_image,
+                        # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')
+                        if self.parser is not None:
+                            out_image = self.parser.restore_natural_hair_and_ears(
+                                swapped_frame=out_image,
+                                original_frame=frame.image,
                                 target_face=target,
-                                source_face=source_face,
-                                source_hair_mask=source_hair_mask,
-                                blend_intensity=self.blend_intensity,
+                                feather=5,
                             )
                     else:
                         out_image = frame.image.copy()

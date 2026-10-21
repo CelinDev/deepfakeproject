@@ -32,7 +32,7 @@ def on_progress(p: PipelineProgress) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("video", help="Caminho do vídeo de entrada")
-    parser.add_argument("rosto", help="Caminho da foto do rosto de referência")
+    parser.add_argument("rosto", nargs="?", default=None, help="Caminho da foto do rosto de referência (opcional no modo --zombie)")
     parser.add_argument("--saida", default=None, help="Caminho do vídeo de saída")
     parser.add_argument(
         "--device",
@@ -45,6 +45,11 @@ def main() -> int:
         action="store_true",
         help="Ativa restauração e super-resolução facial (GFPGAN)",
     )
+    parser.add_argument(
+        "--zombie",
+        action="store_true",
+        help="Ativa efeito especial de Halloween (Modo Zumbi)",
+    )
     args = parser.parse_args()
 
     print(f"=== FaceLab — Execução de Face Swap ===")
@@ -52,12 +57,14 @@ def main() -> int:
     print(f"Rosto de origem : {args.rosto}")
     print(f"Dispositivo     : {args.device}")
     print(f"Restauração GFPGAN: {'Ativada' if args.enhance else 'Desativada'}")
+    print(f"Modo Zumbi Halloween: {'Ativado' if args.zombie else 'Desativado'}")
 
     try:
         pipeline = VideoPipeline(
             device_preference=DevicePreference(args.device),
             on_progress=on_progress,
             enable_enhancer=args.enhance,
+            enable_zombie=args.zombie,
         )
         print(f"Dispositivo selecionado: {pipeline.device_manager.info.name}")
         out_file = pipeline.process(

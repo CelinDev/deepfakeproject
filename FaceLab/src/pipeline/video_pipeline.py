@@ -22,14 +22,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import OUTPUT_DIR
+from config.settings import OUTPUT_DIR, ZOMBIE_REFERENCE_IMAGE
 from src.core.types import DetectedFace
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_enhancer import FaceEnhancer
+from src.face.face_parser import HAIR_AND_EARS_CLASSES, FaceParser
 from src.face.face_swapper import INSwapperModel
 from src.face.face_tracker import TargetFaceTracker
 from src.face.temporal_smoother import TemporalSmoother
+from src.face.zombie_transformer import ZombieTransformer
 from src.inference.device_manager import DeviceManager, DevicePreference
 from src.utils.validators import validate_image_path, validate_output_path, validate_video_path
 from src.video.frame_source import VideoFileSource
@@ -59,14 +61,19 @@ class VideoPipeline:
         blend_intensity: float = 1.0,
         color_correct: bool = True,
         feather_amount: int = 15,
+        enable_zombie: bool = False,
+        enable_head_swap: bool = True,
     ) -> None:
         self.device_manager = DeviceManager(device_preference)
         self.detector = InsightFaceDetector(self.device_manager)
         compositor = FaceCompositor(blur_amount=feather_amount)
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.enhancer = FaceEnhancer(self.device_manager) if enable_enhancer else None
+        self.parser = FaceParser(self.device_manager) if enable_head_swap else None
         self.blend_intensity = blend_intensity
         self.color_correct = color_correct
+        self.enable_zombie = enable_zombie
+        self.enable_head_swap = enable_head_swap
         self.on_progress = on_progress
         self._is_cancelled = False
 
@@ -74,14 +81,26 @@ class VideoPipeline:
         """Sinaliza para interromper o pipeline com segurança."""
         self._is_cancelled = True
 
-    def extract_source_face(self, image_path: str | Path) -> DetectedFace:
+    def extract_source_face(self, image_path: str | Path, det_thresh: float = 0.5) -> DetectedFace:
         """Detecta e retorna o rosto principal da imagem de referência."""
         path = validate_image_path(image_path)
         img = cv2.imread(str(path))
         if img is None:
             raise ValueError(f"Não foi possível abrir a imagem: {path}")
 
+        if det_thresh != 0.5:
+            self.detector.set_detection_threshold(det_thresh)
+
         faces = self.detector.detect(img)
+
+        # Se não achou na primeira tentativa, tenta com limiar baixo automático (ex: próteses pesadas / zumbi)
+        if not faces and det_thresh >= 0.5:
+            self.detector.set_detection_threshold(0.2)
+            faces = self.detector.detect(img)
+
+        # Restaura o limiar padrão para o processamento de quadros do vídeo
+        self.detector.set_detection_threshold(0.5)
+
         if not faces:
             raise ValueError(f"Nenhum rosto foi detectado na imagem de referência: {path.name}")
 
@@ -95,7 +114,7 @@ class VideoPipeline:
     def process(
         self,
         video_path: str | Path,
-        source_image_path: str | Path,
+        source_image_path: str | Path | None = None,
         output_path: str | Path | None = None,
     ) -> Path:
         """Executa o processamento completo do vídeo."""
@@ -106,8 +125,27 @@ class VideoPipeline:
             source=v_path,
         )
 
-        logger.info("Extraindo rosto de referência...")
-        source_face = self.extract_source_face(source_image_path)
+        source_face: DetectedFace | None = None
+        source_image: np.ndarray | None = None
+        source_hair_mask: np.ndarray | None = None
+
+        ref_path: Path | None = None
+        if self.enable_zombie and source_image_path is None:
+            if ZOMBIE_REFERENCE_IMAGE.is_file():
+                ref_path = ZOMBIE_REFERENCE_IMAGE
+                logger.info("Carregando identidade zumbi hiper-realista de referência: %s", ref_path)
+                source_face = self.extract_source_face(ref_path, det_thresh=0.2)
+        elif source_image_path is not None:
+            ref_path = validate_image_path(source_image_path)
+            logger.info("Extraindo rosto de referência...")
+            source_face = self.extract_source_face(ref_path)
+
+        if ref_path is not None and self.parser is not None and source_face is not None:
+            source_image = cv2.imread(str(ref_path))
+            if source_image is not None:
+                source_hair_mask = self.parser.extract_mask(
+                    source_image, classes=HAIR_AND_EARS_CLASSES, feather=7
+                )
 
         source = VideoFileSource(v_path)
         info = source.info
@@ -145,21 +183,43 @@ class VideoPipeline:
                 # Rastreia o alvo consistente ao longo do vídeo
                 target = tracker.update(faces) if tracker else None
 
-                # Se o alvo foi localizado no quadro atual, suaviza marcos e substitui
+                # Se o alvo foi localizado no quadro atual, processa
                 if target is not None and target.landmarks is not None:
                     # REFINAMENTO TEMPORAL: suaviza os 5 pontos faciais para eliminar micro-tremores (jitter)
                     smoothed_lmk = smoother.smooth_landmarks(target.landmarks)
                     target.landmarks = smoothed_lmk
 
-                    out_image = self.swapper.swap(
-                        target_frame=frame.image,
-                        target_face=target,
-                        source_face=source_face,
-                        smoother=smoother,
-                        enhancer=self.enhancer,
-                        blend_intensity=self.blend_intensity,
-                        color_correct=self.color_correct,
-                    )
+                    if source_face is not None:
+                        out_image = self.swapper.swap(
+                            target_frame=frame.image,
+                            target_face=target,
+                            source_face=source_face,
+                            smoother=smoother,
+                            enhancer=self.enhancer,
+                            blend_intensity=self.blend_intensity,
+                            color_correct=self.color_correct,
+                        )
+
+                        # Segmentação e Fusão da Cabeça Completa (Cabelo, Orelhas, Brincos)
+                        if self.parser is not None and source_image is not None:
+                            out_image = self.parser.blend_hair_and_ears(
+                                target_frame=out_image,
+                                source_image=source_image,
+                                target_face=target,
+                                source_face=source_face,
+                                source_hair_mask=source_hair_mask,
+                                blend_intensity=self.blend_intensity,
+                            )
+                    else:
+                        out_image = frame.image.copy()
+
+                    # Refinamento de Halloween: se ativado sem swap zumbi (ou pós-swap), aplica grading fotográfico
+                    if self.enable_zombie and source_image_path is not None:
+                        out_image = ZombieTransformer.transform(
+                            out_image,
+                            landmarks=target.landmarks,
+                            intensity=1.0,
+                        )
                 else:
                     smoother.reset()
                     out_image = frame.image

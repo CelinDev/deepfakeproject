@@ -28,13 +28,14 @@ class VideoWorker(QObject):
     def __init__(
         self,
         video_path: Path | str,
-        image_path: Path | str,
-        output_path: Path | str,
-        device_preference: DevicePreference,
+        image_path: Path | str | None = None,
+        output_path: Path | str | None = None,
+        device_preference: DevicePreference = DevicePreference.AUTO,
         enable_enhancer: bool = False,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
         feather_amount: int = 15,
+        enable_zombie: bool = False,
     ) -> None:
         super().__init__()
         self.video_path = video_path
@@ -45,6 +46,7 @@ class VideoWorker(QObject):
         self.blend_intensity = blend_intensity
         self.color_correct = color_correct
         self.feather_amount = feather_amount
+        self.enable_zombie = enable_zombie
         self.pipeline: VideoPipeline | None = None
 
     def cancel(self) -> None:
@@ -62,6 +64,7 @@ class VideoWorker(QObject):
                 blend_intensity=self.blend_intensity,
                 color_correct=self.color_correct,
                 feather_amount=self.feather_amount,
+                enable_zombie=self.enable_zombie,
             )
             out_file = self.pipeline.process(
                 video_path=self.video_path,
@@ -85,12 +88,13 @@ class LiveWebcamWorker(QObject):
 
     def __init__(
         self,
-        image_path: Path | str,
+        image_path: Path | str | None = None,
         camera_index: int = 0,
         device_preference: DevicePreference = DevicePreference.AUTO,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
         feather_amount: int = 15,
+        enable_zombie: bool = False,
     ) -> None:
         super().__init__()
         self.image_path = image_path
@@ -99,6 +103,7 @@ class LiveWebcamWorker(QObject):
         self.blend_intensity = blend_intensity
         self.color_correct = color_correct
         self.feather_amount = feather_amount
+        self.enable_zombie = enable_zombie
         self.pipeline: LivePipeline | None = None
 
     def stop(self) -> None:
@@ -117,6 +122,7 @@ class LiveWebcamWorker(QObject):
                 blend_intensity=self.blend_intensity,
                 color_correct=self.color_correct,
                 feather_amount=self.feather_amount,
+                enable_zombie=self.enable_zombie,
             )
             self.pipeline.run(
                 source_image_path=self.image_path,

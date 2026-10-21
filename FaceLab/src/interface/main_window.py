@@ -194,6 +194,19 @@ class MainWindow(QWidget):
         vbox_color.addWidget(self.chk_color_correct)
         c_layout.addLayout(vbox_color)
 
+        # Botão Especial de Halloween: Modo Zumbi
+        vbox_zombie = QVBoxLayout()
+        vbox_zombie.setSpacing(4)
+        vbox_zombie.addWidget(QLabel("🎃 Halloween Especial:"))
+        self.btn_zombie = QPushButton("🧟 MODO ZUMBI: OFF")
+        self.btn_zombie.setObjectName("zombieBtn")
+        self.btn_zombie.setCheckable(True)
+        self.btn_zombie.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_zombie.setToolTip("Transforma o rosto em um zumbi realista com necrose, cortes profundos e sangue!")
+        self.btn_zombie.toggled.connect(self._on_zombie_toggled)
+        vbox_zombie.addWidget(self.btn_zombie)
+        c_layout.addLayout(vbox_zombie)
+
         main_layout.addWidget(controls_box)
 
         # 4. Sistema de Abas (Tabs) Modernas
@@ -347,6 +360,16 @@ class MainWindow(QWidget):
         layout.addWidget(cam_view_box)
 
     # --- Callbacks dos Sliders Dinâmicos ---
+    def _on_zombie_toggled(self, checked: bool) -> None:
+        if checked:
+            self.btn_zombie.setText("🧟 MODO ZUMBI: ATIVO")
+        else:
+            self.btn_zombie.setText("🧟 MODO ZUMBI: OFF")
+        if self.webcam_worker:
+            self.webcam_worker.enable_zombie = checked
+            if self.webcam_worker.pipeline:
+                self.webcam_worker.pipeline.enable_zombie = checked
+
     def _on_blend_changed(self, value: int) -> None:
         self.lbl_blend.setText(f"Intensidade do Swap: <b>{value}%</b>")
         if self.webcam_worker:
@@ -399,8 +422,17 @@ class MainWindow(QWidget):
         if not self.video_path or not self.video_path.is_file():
             QMessageBox.warning(self, "Atenção", "Por favor, selecione um arquivo de vídeo de origem válido.")
             return
-        if not self.image_path or not self.image_path.is_file():
-            QMessageBox.warning(self, "Atenção", "Por favor, selecione uma imagem de rosto frontal de referência.")
+
+        is_zombie_mode = self.btn_zombie.isChecked()
+        has_source_img = self.image_path and self.image_path.is_file()
+
+        # Se não estiver no modo zumbi, precisa obrigatoriamente de um rosto de referência para o swap
+        if not is_zombie_mode and not has_source_img:
+            QMessageBox.warning(
+                self,
+                "Atenção",
+                "Por favor, selecione uma imagem de rosto de referência (ou ative o Modo Zumbi para transformar direto o vídeo original).",
+            )
             return
 
         out_path = Path(self.edit_output.text())
@@ -412,18 +444,19 @@ class MainWindow(QWidget):
         self.btn_select_video.setEnabled(False)
         self.btn_select_img.setEnabled(False)
         self.progress_bar.setValue(0)
-        self.lbl_status.setText("Carregando redes neurais e inicializando CUDA...")
+        self.lbl_status.setText("Carregando redes neurais e inicializando processamento...")
 
         self.video_thread = QThread()
         self.video_worker = VideoWorker(
             video_path=self.video_path,
-            image_path=self.image_path,
+            image_path=self.image_path if has_source_img else None,
             output_path=out_path,
             device_preference=pref,
             enable_enhancer=self.chk_enhance.isChecked(),
             blend_intensity=self.slider_blend.value() / 100.0,
             color_correct=self.chk_color_correct.isChecked(),
             feather_amount=self.slider_feather.value(),
+            enable_zombie=is_zombie_mode,
         )
         self.video_worker.moveToThread(self.video_thread)
 
@@ -481,8 +514,15 @@ class MainWindow(QWidget):
             self._start_webcam()
 
     def _start_webcam(self) -> None:
-        if not self.image_path or not self.image_path.is_file():
-            QMessageBox.warning(self, "Atenção", "Por favor, selecione primeiro a foto do rosto de referência.")
+        is_zombie_mode = self.btn_zombie.isChecked()
+        has_source_img = self.image_path and self.image_path.is_file()
+
+        if not is_zombie_mode and not has_source_img:
+            QMessageBox.warning(
+                self,
+                "Atenção",
+                "Por favor, selecione primeiro a foto do rosto de referência (ou ative o Modo Zumbi para transformar direto a sua webcam).",
+            )
             return
 
         cam_idx = int(self.combo_cam.currentData())
@@ -496,12 +536,13 @@ class MainWindow(QWidget):
 
         self.webcam_thread = QThread()
         self.webcam_worker = LiveWebcamWorker(
-            image_path=self.image_path,
+            image_path=self.image_path if has_source_img else None,
             camera_index=cam_idx,
             device_preference=pref,
             blend_intensity=self.slider_blend.value() / 100.0,
             color_correct=self.chk_color_correct.isChecked(),
             feather_amount=self.slider_feather.value(),
+            enable_zombie=is_zombie_mode,
         )
         self.webcam_worker.moveToThread(self.webcam_thread)
 

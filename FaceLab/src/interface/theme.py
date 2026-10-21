@@ -128,6 +128,28 @@ QPushButton#primaryActionBtn:hover {
     border: 1px solid #6ee7b7;
 }
 
+/* Botão Especial de Halloween / Modo Zumbi */
+QPushButton#zombieBtn {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7f1d1d, stop:0.5 #991b1b, stop:1 #450a0a);
+    color: #fecaca;
+    border: 1.5px solid #ef4444;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 13px;
+    padding: 8px 16px;
+    letter-spacing: 0.5px;
+}
+QPushButton#zombieBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #991b1b, stop:0.5 #dc2626, stop:1 #7f1d1d);
+    border: 1.5px solid #f87171;
+    color: #ffffff;
+}
+QPushButton#zombieBtn:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #dc2626, stop:0.5 #b91c1c, stop:1 #7f1d1d);
+    border: 2px solid #fca5a5;
+    color: #ffffff;
+}
+
 /* Sistema de Abas (Tabs) Modernas */
 QTabWidget::pane {
     border: 1px solid #1e293b;

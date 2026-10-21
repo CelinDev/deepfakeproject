@@ -55,6 +55,11 @@ class InsightFaceDetector(FaceDetector):
         session = getattr(self._app.det_model, "session", None)
         return list(session.get_providers()) if session is not None else []
 
+    def set_detection_threshold(self, threshold: float) -> None:
+        """Ajusta dinamicamente a sensibilidade (threshold) do modelo de detecção SCRFD."""
+        if hasattr(self._app, "det_model") and hasattr(self._app.det_model, "det_thresh"):
+            self._app.det_model.det_thresh = float(threshold)
+
     def detect(self, image: np.ndarray, compute_embeddings: bool = True) -> list[DetectedFace]:
         if compute_embeddings or "recognition" not in self._app.models:
             faces = self._app.get(image)

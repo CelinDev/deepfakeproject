@@ -16,6 +16,9 @@ OUTPUT_DIR: Path = PROJECT_ROOT / "output"
 LOGS_DIR: Path = PROJECT_ROOT / "logs"
 TEMP_DIR: Path = PROJECT_ROOT / "temp"
 TOOLS_DIR: Path = PROJECT_ROOT / "tools"
+ASSETS_DIR: Path = PROJECT_ROOT / "assets"
+ZOMBIE_REFERENCE_IMAGE: Path = ASSETS_DIR / "zombie_reference.png"
+BISENET_MODEL_PATH: Path = MODELS_DIR / "bisenet_resnet_34.onnx"
 
 # FFmpeg local do projeto (tools/ffmpeg/bin) tem prioridade sobre o PATH.
 LOCAL_FFMPEG_BIN: Path = TOOLS_DIR / "ffmpeg" / "bin"

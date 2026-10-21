@@ -73,13 +73,23 @@ class FaceParser:
     ) -> None:
         self.model_path = Path(model_path) if model_path else BISENET_MODEL_PATH
         if not self.model_path.is_file():
-            raise FileNotFoundError(f"Modelo BiSeNet não encontrado em: {self.model_path}")
+            self._download_model()
 
         providers = onnx_providers(device_manager)
         self._session = ort.InferenceSession(str(self.model_path), providers=providers)
         self.input_name = self._session.get_inputs()[0].name
         self.output_name = self._session.get_outputs()[0].name
         logger.info("FaceParser (BiSeNet) carregado. Providers: %s", self._session.get_providers())
+
+    def _download_model(self) -> None:
+        """Baixa o modelo BiSeNet ResNet-34 automaticamente se não estiver presente."""
+        import urllib.request
+
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        url = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/bisenet_resnet_34.onnx"
+        logger.info("Baixando modelo BiSeNet (segmentação de cabeça e cabelo)...")
+        urllib.request.urlretrieve(url, str(self.model_path))
+        logger.info("Download do BiSeNet concluído!")
 
     def parse(self, image: np.ndarray) -> np.ndarray:
         """Executa a inferência e retorna mapa de índices 2D (0 a 18)."""

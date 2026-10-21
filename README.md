@@ -47,7 +47,7 @@ Siga o passo a passo intuitivo abaixo para configurar o ambiente em qualquer com
 
 ### 1. Clonar o Repositório
 ```powershell
-git clone https://github.com/SEU_USUARIO/FaceLab.git
+git clone https://github.com/SEU_USUARIO/deepfakeproject.git
 cd FaceLab
 ```
 

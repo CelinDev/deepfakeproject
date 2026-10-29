@@ -3,6 +3,9 @@
 __pycache__/
 .pytest_cache/
 .vscode/
+build/
+dist/
+*.spec
 
 # Ferramentas locais e binários
 tools/ffmpeg/

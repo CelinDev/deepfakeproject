@@ -35,12 +35,15 @@ sys.path.insert(0, str(FACELAB_DIR))
 os.chdir(str(FACELAB_DIR))
 
 from src.interface.main_window import MainWindow
+from src.interface.model_downloader import ensure_models_installed
 from PySide6.QtWidgets import QApplication
 
 
 def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    if not ensure_models_installed():
+        return 0
     window = MainWindow()
     window.show()
     return app.exec()

@@ -6,10 +6,14 @@ outro módulo precise "adivinhar" onde estão as coisas.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
-# Raiz do projeto (pasta FaceLab/)
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+# Raiz do projeto: quando empacotado em executável (PyInstaller), usa a pasta do .exe
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT: Path = Path(sys.executable).resolve().parent
+else:
+    PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
 MODELS_DIR: Path = PROJECT_ROOT / "models"
 OUTPUT_DIR: Path = PROJECT_ROOT / "output"

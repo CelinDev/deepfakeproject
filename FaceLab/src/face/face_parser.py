@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config.settings import BISENET_MODEL_PATH
+from config.settings import ALIGNED_MASK_SIZE, BISENET_MODEL_PATH, MASK_EMA_ALPHA
 from src.core.types import DetectedFace
 from src.inference.device_manager import DeviceManager
 from src.inference.model_loader import onnx_providers
@@ -48,19 +48,35 @@ FACE_PARSER_CLASSES = {
     18: "hat",       # Chapéu / Boné
 }
 
-# Classes de oclusão e proteção de fundo (elementos que NÃO devem receber o tom do rosto)
-# Inclui também o interior da boca (11: dentes/língua) e óculos (6) para realismo máximo ao falar.
-NATURAL_HAIR_AND_OCCLUSION_CLASSES = frozenset({
-    0,   # background / fundo da cena (elimina qualquer aura no ar)
-    6,   # óculos (preserva armação/lentes reais)
-    7,   # orelha esquerda
-    8,   # orelha direita
-    9,   # brincos
-    11,  # interior da boca / dentes reais (elimina dentes borrados em 128x128 ao falar/sorrir)
-    16,  # roupas / ombros
-    17,  # cabelo
-    18,  # chapéu / adereços
-})
+# Classes que compõem a face interna que DEVE ser trocada (pele, sobrancelhas, olhos, nariz e lábios)
+FACE_SWAP_FOREGROUND_CLASSES: tuple[int, ...] = (
+    1,   # skin (pele facial)
+    2,   # l_brow (sobrancelha esq)
+    3,   # r_brow (sobrancelha dir)
+    4,   # l_eye (olho esq)
+    5,   # r_eye (olho dir)
+    10,  # nose (nariz)
+    12,  # u_lip (lábio superior)
+    13,  # l_lip (lábio inferior)
+)
+
+# Classes de oclusão na máscara do crop alinhado (cabelo, orelhas, pescoço, óculos, dentes/interior da boca, chapéu, roupa)
+ALIGNED_OCCLUSION_CLASSES: tuple[int, ...] = (
+    0,   # background
+    6,   # eye_g (óculos)
+    7,   # l_ear (orelha esq)
+    8,   # r_ear (orelha dir)
+    9,   # ear_r (brincos)
+    11,  # mouth (interior da boca / dentes reais)
+    14,  # neck (pescoço)
+    15,  # neck_l (colar)
+    16,  # cloth (roupa)
+    17,  # hair (cabelo)
+    18,  # hat (chapéu)
+)
+
+# Classes de oclusão e proteção de fundo (usadas pelo método legado restore_natural_hair_and_ears)
+NATURAL_HAIR_AND_OCCLUSION_CLASSES = frozenset(ALIGNED_OCCLUSION_CLASSES)
 
 
 class FaceParser:
@@ -80,8 +96,61 @@ class FaceParser:
         self.input_name = self._session.get_inputs()[0].name
         self.output_name = self._session.get_outputs()[0].name
         self._cached_mask_roi: np.ndarray | None = None
+        self._cached_aligned_prob: np.ndarray | None = None
         self._frame_counter: int = 0
         logger.info("FaceParser (BiSeNet) carregado. Providers: %s", self._session.get_providers())
+
+    def reset_cache(self) -> None:
+        """Limpa os caches de máscara temporal."""
+        self._cached_mask_roi = None
+        self._cached_aligned_prob = None
+        self._frame_counter = 0
+
+    @staticmethod
+    def _softmax_channels(logits: np.ndarray) -> np.ndarray:
+        """Calcula softmax numericamente estável ao longo do eixo de canais (C, H, W)."""
+        shifted = logits - np.max(logits, axis=0, keepdims=True)
+        exp_x = np.exp(shifted)
+        return exp_x / (np.sum(exp_x, axis=0, keepdims=True) + 1e-8)
+
+    def parse_probabilities(
+        self,
+        aligned_crop: np.ndarray,
+        out_size: int = ALIGNED_MASK_SIZE,
+        reuse_interval: int = 1,
+    ) -> np.ndarray:
+        """Calcula o mapa de máscara contínua [0.0, 1.0] no espaço do crop alinhado usando probabilidades softmax.
+
+        Soma as probabilidades das classes faciais internas (pele, sobrancelhas, olhos, nariz e lábios)
+        e desconta explicitamente as probabilidades de oclusão (cabelo, orelhas, pescoço, óculos, dentes),
+        sem usar ``argmax`` nem ``INTER_NEAREST``.
+        """
+        self._frame_counter += 1
+        if (
+            reuse_interval > 1
+            and self._cached_aligned_prob is not None
+            and (self._frame_counter - 1) % reuse_interval != 0
+        ):
+            if self._cached_aligned_prob.shape[:2] == (out_size, out_size):
+                return self._cached_aligned_prob
+            return cv2.resize(self._cached_aligned_prob, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
+
+        blob = self.preprocess(aligned_crop, size=(512, 512))
+        logits = self._session.run([self.output_name], {self.input_name: blob})[0][0]  # (19, 512, 512)
+        probs = self._softmax_channels(logits)
+
+        face_prob = np.sum(probs[list(FACE_SWAP_FOREGROUND_CLASSES)], axis=0)
+        occ_prob = np.sum(probs[list(ALIGNED_OCCLUSION_CLASSES)], axis=0)
+        # Combina a probabilidade contínua da face com a supressão explícita das oclusões
+        soft_mask_512 = np.clip(face_prob * (1.0 - occ_prob), 0.0, 1.0).astype(np.float32)
+
+        if out_size != 512:
+            soft_mask = cv2.resize(soft_mask_512, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
+        else:
+            soft_mask = soft_mask_512
+
+        self._cached_aligned_prob = soft_mask
+        return soft_mask
 
     def _download_model(self) -> None:
         """Baixa o modelo BiSeNet ResNet-34 automaticamente se não estiver presente."""

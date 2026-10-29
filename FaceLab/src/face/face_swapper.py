@@ -23,12 +23,13 @@ import onnx
 from onnx import numpy_helper
 import onnxruntime as ort
 
-from config.settings import MODELS_DIR
+from config.settings import ALIGNED_MASK_SIZE, MODELS_DIR
 from src.core.interfaces import FaceSwapper
 from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_enhancer import FaceEnhancer
+from src.face.face_parser import FaceParser
 from src.face.temporal_smoother import TemporalSmoother
 from src.inference.device_manager import DeviceManager
 from src.inference.model_loader import onnx_providers
@@ -87,6 +88,8 @@ class INSwapperModel(FaceSwapper):
         color_correct: bool = True,
         source_crop: np.ndarray | None = None,
         enhancer_interval: int = 1,
+        parser: FaceParser | None = None,
+        parser_interval: int = 1,
     ) -> np.ndarray:
         if target_face.landmarks is None:
             return target_frame  # Sem marcos faciais, impossível alinhar
@@ -142,7 +145,14 @@ class INSwapperModel(FaceSwapper):
         if enhancer is not None:
             fake_bgr = enhancer.enhance(fake_bgr, reuse_interval=enhancer_interval)
 
-        # 8. Composição em alta resolução (512x512) sobre o frame original
+        # 8. Máscara semântica contínua (softmax) no espaço do crop alinhado (inclui oclusão de cabelo/orelhas/pescoço/óculos)
+        parser_mask: np.ndarray | None = None
+        if parser is not None:
+            parser_mask = parser.parse_probabilities(
+                aligned_hi, out_size=ALIGNED_MASK_SIZE, reuse_interval=parser_interval
+            )
+
+        # 9. Composição em alta resolução (512x512) sobre o frame original
         return self.compositor.composite(
             original_frame=target_frame,
             fake_crop=fake_bgr,
@@ -151,5 +161,6 @@ class INSwapperModel(FaceSwapper):
             color_correct=color_correct,
             smoother=smoother,
             blend_intensity=blend_intensity,
+            parser_mask=parser_mask,
         )
 

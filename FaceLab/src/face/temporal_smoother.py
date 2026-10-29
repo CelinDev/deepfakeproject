@@ -16,6 +16,7 @@ import math
 import numpy as np
 
 from config.settings import (
+    MASK_EMA_ALPHA,
     ONE_EURO_BETA,
     ONE_EURO_D_CUTOFF,
     ONE_EURO_MIN_CUTOFF,
@@ -103,6 +104,7 @@ class TemporalSmoother:
         d_cutoff: float = ONE_EURO_D_CUTOFF,
         scene_cut_ratio: float = SCENE_CUT_FACE_RATIO,
         hold_frames: int = TARGET_HOLD_FRAMES,
+        alpha_mask: float = MASK_EMA_ALPHA,
         alpha_landmarks: float | None = None,  # Mantido por compatibilidade retroativa
     ) -> None:
         """
@@ -119,12 +121,14 @@ class TemporalSmoother:
                          do alpha antes de resetar quando o rosto é perdido.
         """
         self.alpha_color = float(np.clip(alpha_color, 0.01, 1.0))
+        self.alpha_mask = float(np.clip(alpha_mask, 0.01, 1.0))
         self.scene_cut_ratio = float(scene_cut_ratio)
         self.hold_frames = max(0, int(hold_frames))
         self.one_euro = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.prev_landmarks: np.ndarray | None = None
         self.prev_bbox: np.ndarray | None = None
         self.prev_stats: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.prev_mask: np.ndarray | None = None
         self.missing_count: int = 0
 
     @staticmethod
@@ -216,10 +220,22 @@ class TemporalSmoother:
         self.prev_stats = (sm, ss, tm, ts)
         return sm, ss, tm, ts
 
+    def smooth_mask(self, mask: np.ndarray) -> np.ndarray:
+        """Aplica EMA temporal na máscara no espaço do crop alinhado (evita flicker de bordas/oclusões)."""
+        m = np.asarray(mask, dtype=np.float32)
+        if self.prev_mask is None or self.prev_mask.shape != m.shape:
+            self.prev_mask = m.copy()
+            return m
+        a = self.alpha_mask
+        smoothed = a * m + (1.0 - a) * self.prev_mask
+        self.prev_mask = smoothed.copy()
+        return smoothed.astype(np.float32)
+
     def reset(self) -> None:
-        """Reinicia os estados anteriores dos filtros de landmarks, bbox, hold e cor."""
+        """Reinicia os estados anteriores dos filtros de landmarks, bbox, máscara, hold e cor."""
         self.one_euro.reset()
         self.prev_landmarks = None
         self.prev_bbox = None
         self.prev_stats = None
+        self.prev_mask = None
         self.missing_count = 0

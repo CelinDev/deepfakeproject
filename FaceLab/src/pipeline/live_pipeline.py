@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import LIVE_ENHANCER_INTERVAL, ZOMBIE_REFERENCE_IMAGE
+from config.settings import LIVE_ENHANCER_INTERVAL, USE_LEGACY_BBOX_RESTORE, ZOMBIE_REFERENCE_IMAGE
 from src.core.interfaces import FrameSource
 from src.core.types import DetectedFace, Frame
 from src.face.face_aligner import FaceAligner
@@ -50,6 +50,7 @@ class LivePipeline:
         enable_head_swap: bool = True,
         enable_enhancer: bool = True,
         enhancer_interval: int = LIVE_ENHANCER_INTERVAL,
+        use_legacy_bbox_restore: bool = USE_LEGACY_BBOX_RESTORE,
     ) -> None:
         """
         Args:
@@ -75,6 +76,7 @@ class LivePipeline:
         self.enable_zombie = enable_zombie
         self.enable_head_swap = enable_head_swap
         self.enhancer_interval = max(1, int(enhancer_interval))
+        self.use_legacy_bbox_restore = bool(use_legacy_bbox_restore)
         self.on_frame_rendered = on_frame_rendered
         self._is_running = False
 
@@ -211,10 +213,12 @@ class LivePipeline:
                             color_correct=self.color_correct,
                             source_crop=source_crop,
                             enhancer_interval=self.enhancer_interval,
+                            parser=None if self.use_legacy_bbox_restore else self.parser,
+                            parser_interval=2,
                         )
 
-                        # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (com cache a cada 2 frames para +FPS)
-                        if self.parser is not None:
+                        # Método legado opcional (segundo passe com recorte variável via bbox) para comparação
+                        if self.use_legacy_bbox_restore and self.parser is not None:
                             out_frame = self.parser.restore_natural_hair_and_ears(
                                 swapped_frame=out_frame,
                                 original_frame=frame.image,

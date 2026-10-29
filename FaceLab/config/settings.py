@@ -41,6 +41,19 @@ SCENE_CUT_FACE_RATIO: float = 0.65      # Deslocamento relativo ao tamanho do ro
 SMOOTHER_ALPHA_COLOR: float = 0.15      # Peso da nova amostra nas estatísticas de cor (0.15 = alta inércia/estabilidade)
 TARGET_HOLD_FRAMES: int = 6             # Quadros de persistência (hold + fade-out) ao perder temporariamente o rosto
 
+# Parâmetros de máscara alinhada (Fase 2), oclusão, correção de cor e blending
+ALIGNED_MASK_SIZE: int = 256            # Resolução fixa no espaço do crop alinhado para geração da máscara semântica
+MASK_EMA_ALPHA: float = 0.45            # Peso da nova máscara no EMA temporal (0.45 = suave sem atraso em piscadas/fala)
+USE_LEGACY_BBOX_RESTORE: bool = False   # Flag para comparar com o método antigo (restore_natural_hair_and_ears via bbox)
+XSEG_MODEL_PATH: Path = MODELS_DIR / "xseg_2.onnx"
+COLOR_STD_GAIN_MIN: float = 0.80        # Ganho mínimo permitido na razão de desvios padrão em LAB
+COLOR_STD_GAIN_MAX: float = 1.25        # Ganho máximo permitido na razão de desvios padrão em LAB
+ENABLE_BORDER_LOWFREQ_COLOR: bool = False  # Correção opcional de baixa frequência na faixa de borda
+COMPOSITOR_BLEND_MODE: str = "laplacian"   # Modo de blending: "alpha", "laplacian" (multi-band) ou "lowfreq_border"
+LAPLACIAN_PYRAMID_LEVELS: int = 3          # Níveis da pirâmide laplaciana no multi-band blending
+WARP_BACK_INTERPOLATION: str = "cubic"     # Interpolação no warp de volta ao frame: "cubic" ou "lanczos4"
+WARP_PREFILTER_SHRINK: bool = True         # Aplica pré-filtro gaussiano anti-aliasing quando o rosto no frame é menor que o crop
+
 
 def find_executable(name: str) -> Path | None:
     """Localiza um executável (ex.: 'ffmpeg', 'ffprobe').

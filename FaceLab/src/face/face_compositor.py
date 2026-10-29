@@ -10,15 +10,87 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from config.settings import ALIGNED_MASK_SIZE
 from src.face.temporal_smoother import TemporalSmoother
 
 
 class FaceCompositor:
     """Combina o rosto sintetizado com o quadro original."""
 
-    def __init__(self, blur_amount: int = 15, erode_amount: int = 5) -> None:
+    _ellipse_cache: dict[tuple[int, int], np.ndarray] = {}
+
+    def __init__(
+        self,
+        blur_amount: int = 15,
+        erode_amount: int = 5,
+        mask_size: int = ALIGNED_MASK_SIZE,
+    ) -> None:
         self.blur_amount = blur_amount if blur_amount % 2 != 0 else blur_amount + 1
         self.erode_amount = erode_amount
+        self.mask_size = int(mask_size)
+
+    @classmethod
+    def get_cached_ellipse(cls, height: int, width: int) -> np.ndarray:
+        """Retorna máscara elíptica pré-calculada e cacheada para a resolução solicitada."""
+        key = (int(height), int(width))
+        cached = cls._ellipse_cache.get(key)
+        if cached is not None:
+            return cached
+
+        ellipse = np.zeros((height, width), dtype=np.float32)
+        center = (width // 2, int(height * 0.50))
+        axes = (int(width * 0.44), int(height * 0.48))
+        cv2.ellipse(ellipse, center, axes, 0, 0, 360, 1.0, -1)
+        cls._ellipse_cache[key] = ellipse
+        return ellipse
+
+    def build_aligned_mask(
+        self,
+        crop_h: int,
+        crop_w: int,
+        orig_crop_w: int,
+        parser_mask: np.ndarray | None = None,
+        smoother: TemporalSmoother | None = None,
+    ) -> np.ndarray:
+        """Gera a máscara no espaço do crop alinhado (tamanho fixo ``self.mask_size``, ex. 256),
+        combinando probabilidades softmax do parser, elipse cacheada e EMA temporal.
+        """
+        ms = self.mask_size
+        base_ellipse = self.get_cached_ellipse(ms, ms).copy()
+
+        if parser_mask is not None:
+            pm = (
+                parser_mask
+                if parser_mask.shape[:2] == (ms, ms)
+                else cv2.resize(parser_mask.astype(np.float32), (ms, ms), interpolation=cv2.INTER_LINEAR)
+            )
+            mask_ms = base_ellipse * np.clip(pm, 0.0, 1.0)
+        else:
+            mask_ms = base_ellipse
+
+        if smoother is not None:
+            mask_ms = smoother.smooth_mask(mask_ms)
+
+        # Escala erode_amount e blur_amount para o espaço mask_size (referência base 128px)
+        mask_scale = max(1.0, float(ms) / 128.0)
+        scaled_erode = int(round(self.erode_amount * mask_scale))
+        if scaled_erode > 0:
+            erode_k = scaled_erode if scaled_erode % 2 != 0 else scaled_erode + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+            mask_ms = cv2.erode(mask_ms, kernel, iterations=1)
+
+        scaled_blur = max(3, int(round(self.blur_amount * mask_scale)))
+        blur_k = scaled_blur if scaled_blur % 2 != 0 else scaled_blur + 1
+        mask_ms = cv2.GaussianBlur(mask_ms, (blur_k, blur_k), 0)
+
+        # Supressão leve de cauda/halo (Anti-Aura)
+        mask_ms = np.clip((mask_ms - 0.03) / (0.97 - 0.03), 0.0, 1.0)
+        fine_k = max(3, int(round(5 * mask_scale))) | 1
+        mask_ms = cv2.GaussianBlur(mask_ms, (fine_k, fine_k), 0)
+
+        if (crop_h, crop_w) != (ms, ms):
+            return cv2.resize(mask_ms, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+        return mask_ms
 
     def match_color_hist(
         self,
@@ -84,6 +156,7 @@ class FaceCompositor:
         color_correct: bool = True,
         smoother: TemporalSmoother | None = None,
         blend_intensity: float = 1.0,
+        parser_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves.
 
@@ -107,30 +180,14 @@ class FaceCompositor:
         # Matriz inversa (espaço do fake_crop -> espaço do quadro original)
         inv_affine = cv2.invertAffineTransform(scaled_m)
 
-        # Máscara anatômica expandida:
-        # Cobre toda a estrutura facial (maxilar, bochechas e testa) com mais liberdade,
-        # sem sufocar os traços do rosto trocado.
-        mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-        center = (crop_w // 2, int(crop_h * 0.50))
-        axes = (int(crop_w * 0.44), int(crop_h * 0.48))
-        cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
-
-        # Escala erode_amount e blur_amount proporcionalmente ao tamanho do fake_crop
-        resolution_scale = max(1.0, float(crop_w) / float(orig_crop_w), float(crop_w) / 128.0)
-        scaled_erode = int(round(self.erode_amount * resolution_scale))
-        if scaled_erode > 0:
-            erode_k = scaled_erode if scaled_erode % 2 != 0 else scaled_erode + 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
-            mask = cv2.erode(mask, kernel, iterations=1)
-
-        scaled_blur = max(3, int(round(self.blur_amount * resolution_scale)))
-        blur_k = scaled_blur if scaled_blur % 2 != 0 else scaled_blur + 1
-        mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
-
-        # Supressão leve de cauda/halo (Anti-Aura): corta apenas resíduos imperceptíveis (<3%)
-        mask = np.clip((mask - 0.03) / (0.97 - 0.03), 0.0, 1.0)
-        fine_k = max(3, int(round(5 * resolution_scale))) | 1
-        mask = cv2.GaussianBlur(mask, (fine_k, fine_k), 0)
+        # Constrói máscara no espaço do crop alinhado (elipse cacheada * parser softmax + EMA temporal)
+        mask = self.build_aligned_mask(
+            crop_h=crop_h,
+            crop_w=crop_w,
+            orig_crop_w=orig_crop_w,
+            parser_mask=parser_mask,
+            smoother=smoother,
+        )
 
         # OTIMIZAÇÃO (Fase 6): calcula a Região de Interesse (ROI) onde o rosto se projeta no frame.
         # Em vez de aplicar warpAffine e mistura alfa na imagem inteira de 1920x1080 (que custa ~100ms),

@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import OUTPUT_DIR, ZOMBIE_REFERENCE_IMAGE
+from config.settings import OUTPUT_DIR, USE_LEGACY_BBOX_RESTORE, ZOMBIE_REFERENCE_IMAGE
 from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
@@ -64,6 +64,7 @@ class VideoPipeline:
         feather_amount: int = 15,
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
+        use_legacy_bbox_restore: bool = USE_LEGACY_BBOX_RESTORE,
     ) -> None:
         self.device_manager = DeviceManager(device_preference)
         self.detector = InsightFaceDetector(self.device_manager)
@@ -75,6 +76,7 @@ class VideoPipeline:
         self.color_correct = color_correct
         self.enable_zombie = enable_zombie
         self.enable_head_swap = enable_head_swap
+        self.use_legacy_bbox_restore = bool(use_legacy_bbox_restore)
         self.on_progress = on_progress
         self._is_cancelled = False
 
@@ -206,10 +208,11 @@ class VideoPipeline:
                             blend_intensity=effective_blend,
                             color_correct=self.color_correct,
                             source_crop=source_crop,
+                            parser=None if self.use_legacy_bbox_restore else self.parser,
                         )
 
-                        # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')
-                        if self.parser is not None:
+                        # Método legado opcional (segundo passe com recorte variável via bbox) para comparação
+                        if self.use_legacy_bbox_restore and self.parser is not None:
                             out_image = self.parser.restore_natural_hair_and_ears(
                                 swapped_frame=out_image,
                                 original_frame=frame.image,

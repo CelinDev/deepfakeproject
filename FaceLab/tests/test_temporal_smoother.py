@@ -64,3 +64,28 @@ def test_scene_cut_relative_to_face_size_resets_immediately() -> None:
     bbox2 = bbox1 + 300.0
     out = smoother.smooth_landmarks(lmk2, timestamp_s=0.033, bbox=bbox2)
     assert np.allclose(out, lmk2)
+
+
+def test_hold_and_fade_out_before_reset() -> None:
+    """Garante que o smoother segure o último transform por hold_frames com fade-out antes de resetar."""
+    smoother = TemporalSmoother(hold_frames=6)
+    lmk = _base_landmarks()
+    bbox = np.array([80.0, 80.0, 180.0, 200.0], dtype=np.float32)
+    smoother.smooth_landmarks(lmk, timestamp_s=0.0, bbox=bbox)
+
+    fades = []
+    for _ in range(6):
+        held, fade = smoother.hold_or_reset()
+        assert held is not None
+        assert held.landmarks is not None and np.allclose(held.landmarks, lmk)
+        fades.append(fade)
+
+    # Os fatores de fade-out devem ser estritamente decrescentes e entre (0, 1)
+    assert all(0.0 < f < 1.0 for f in fades)
+    assert fades == sorted(fades, reverse=True)
+
+    # No 7º quadro ausente (após hold_frames=6), deve resetar de vez
+    held_after, fade_after = smoother.hold_or_reset()
+    assert held_after is None
+    assert fade_after == 0.0
+    assert smoother.prev_landmarks is None

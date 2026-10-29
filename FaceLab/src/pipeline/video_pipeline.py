@@ -183,15 +183,19 @@ class VideoPipeline:
 
                 # Rastreia o alvo consistente ao longo do vídeo
                 target = tracker.update(faces) if tracker else None
+                fade_factor = 1.0
 
-                # Se o alvo foi localizado no quadro atual, processa
+                # Se o alvo foi localizado no quadro atual, suaviza; caso contrário, aplica hold + fade-out
                 if target is not None and target.landmarks is not None:
-                    # REFINAMENTO TEMPORAL: suaviza os 5 pontos faciais via One Euro Filter com timestamp do frame
                     smoothed_lmk = smoother.smooth_landmarks(
                         target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
                     )
                     target.landmarks = smoothed_lmk
+                else:
+                    target, fade_factor = smoother.hold_or_reset()
 
+                if target is not None and target.landmarks is not None:
+                    effective_blend = self.blend_intensity * fade_factor
                     if source_face is not None:
                         out_image = self.swapper.swap(
                             target_frame=frame.image,
@@ -199,7 +203,7 @@ class VideoPipeline:
                             source_face=source_face,
                             smoother=smoother,
                             enhancer=self.enhancer,
-                            blend_intensity=self.blend_intensity,
+                            blend_intensity=effective_blend,
                             color_correct=self.color_correct,
                             source_crop=source_crop,
                         )
@@ -220,10 +224,9 @@ class VideoPipeline:
                         out_image = ZombieTransformer.transform(
                             out_image,
                             landmarks=target.landmarks,
-                            intensity=1.0,
+                            intensity=fade_factor,
                         )
                 else:
-                    smoother.reset()
                     out_image = frame.image
 
                 frame.image = out_image

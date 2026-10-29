@@ -187,13 +187,19 @@ class LivePipeline:
                         tracker = TargetFaceTracker(alvo.embedding)
 
                 target = tracker.update(faces) if tracker else None
+                fade_factor = 1.0
 
                 if target is not None and target.landmarks is not None:
                     smoothed_lmk = self.smoother.smooth_landmarks(
                         target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
                     )
                     target.landmarks = smoothed_lmk
+                else:
+                    # Hold + fade-out suave do alpha por 5-8 quadros antes de resetar
+                    target, fade_factor = self.smoother.hold_or_reset()
 
+                if target is not None and target.landmarks is not None:
+                    effective_blend = self.blend_intensity * fade_factor
                     if source_face is not None:
                         out_frame = self.swapper.swap(
                             target_frame=frame.image,
@@ -201,7 +207,7 @@ class LivePipeline:
                             source_face=source_face,
                             smoother=self.smoother,
                             enhancer=self.enhancer,
-                            blend_intensity=self.blend_intensity,
+                            blend_intensity=effective_blend,
                             color_correct=self.color_correct,
                             source_crop=source_crop,
                             enhancer_interval=self.enhancer_interval,
@@ -224,10 +230,9 @@ class LivePipeline:
                         out_frame = ZombieTransformer.transform(
                             out_frame,
                             landmarks=target.landmarks,
-                            intensity=1.0,
+                            intensity=fade_factor,
                         )
                 else:
-                    self.smoother.reset()
                     out_frame = frame.image
 
                 # Cálculo de FPS instantâneo suavizado

@@ -21,7 +21,9 @@ from config.settings import (
     ONE_EURO_MIN_CUTOFF,
     SCENE_CUT_FACE_RATIO,
     SMOOTHER_ALPHA_COLOR,
+    TARGET_HOLD_FRAMES,
 )
+from src.core.types import DetectedFace
 
 
 def _smoothing_factor(dt: float, cutoff: float | np.ndarray) -> float | np.ndarray:
@@ -100,6 +102,7 @@ class TemporalSmoother:
         beta: float = ONE_EURO_BETA,
         d_cutoff: float = ONE_EURO_D_CUTOFF,
         scene_cut_ratio: float = SCENE_CUT_FACE_RATIO,
+        hold_frames: int = TARGET_HOLD_FRAMES,
         alpha_landmarks: float | None = None,  # Mantido por compatibilidade retroativa
     ) -> None:
         """
@@ -112,12 +115,17 @@ class TemporalSmoother:
             d_cutoff: Frequência de corte (Hz) para estimativa da derivada.
             scene_cut_ratio: Limiar de deslocamento relativo ao tamanho do rosto para detectar
                              corte de cena e reiniciar o filtro sem arrasto.
+            hold_frames: Quantidade de quadros para manter o último alvo com fade-out progressivo
+                         do alpha antes de resetar quando o rosto é perdido.
         """
         self.alpha_color = float(np.clip(alpha_color, 0.01, 1.0))
         self.scene_cut_ratio = float(scene_cut_ratio)
+        self.hold_frames = max(0, int(hold_frames))
         self.one_euro = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.prev_landmarks: np.ndarray | None = None
+        self.prev_bbox: np.ndarray | None = None
         self.prev_stats: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.missing_count: int = 0
 
     @staticmethod
     def estimate_face_size(landmarks: np.ndarray, bbox: np.ndarray | None = None) -> float:
@@ -150,7 +158,44 @@ class TemporalSmoother:
 
         smoothed = self.one_euro.filter(lmk, timestamp_s=timestamp_s, scale=face_size)
         self.prev_landmarks = smoothed.copy()
+        if bbox is not None:
+            self.prev_bbox = np.asarray(bbox, dtype=np.float32).copy()
+        self.missing_count = 0
         return smoothed
+
+    def hold_or_reset(self) -> tuple[DetectedFace | None, float]:
+        """Mantém o último rosto/landmarks por ``hold_frames`` quadros com fade-out de alpha.
+
+        Returns:
+            (held_face, fade_factor): se dentro da janela de hold, retorna um ``DetectedFace``
+            com os últimos landmarks conhecidos e um fator de opacidade decrescente (0..1).
+            Após ``hold_frames`` quadros ausentes, executa ``reset()`` e retorna ``(None, 0.0)``.
+        """
+        if self.prev_landmarks is None or self.hold_frames <= 0:
+            self.reset()
+            return None, 0.0
+
+        self.missing_count += 1
+        if self.missing_count > self.hold_frames:
+            self.reset()
+            return None, 0.0
+
+        # Fade-out linear suave: ex. para hold_frames=6 -> 6/7, 5/7, ..., 1/7
+        fade_factor = float(self.hold_frames - self.missing_count + 1) / float(self.hold_frames + 1)
+        if self.prev_bbox is not None:
+            bbox = self.prev_bbox.copy()
+        else:
+            min_xy = self.prev_landmarks.min(axis=0) - 20.0
+            max_xy = self.prev_landmarks.max(axis=0) + 20.0
+            bbox = np.array([min_xy[0], min_xy[1], max_xy[0], max_xy[1]], dtype=np.float32)
+
+        held_face = DetectedFace(
+            bbox=bbox,
+            landmarks=self.prev_landmarks.copy(),
+            score=fade_factor,
+            embedding=None,
+        )
+        return held_face, fade_factor
 
     def smooth_color_stats(
         self, s_mean: np.ndarray, s_std: np.ndarray, t_mean: np.ndarray, t_std: np.ndarray
@@ -172,7 +217,9 @@ class TemporalSmoother:
         return sm, ss, tm, ts
 
     def reset(self) -> None:
-        """Reinicia os estados anteriores dos filtros de landmarks e cor."""
+        """Reinicia os estados anteriores dos filtros de landmarks, bbox, hold e cor."""
         self.one_euro.reset()
         self.prev_landmarks = None
+        self.prev_bbox = None
         self.prev_stats = None
+        self.missing_count = 0

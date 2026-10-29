@@ -31,10 +31,11 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 @dataclass
 class TrackerConfig:
-    identity_threshold: float = 0.35  # similaridade mínima de identidade
-    identity_weight: float = 0.7
-    iou_weight: float = 0.3
-    max_missing_frames: int = 15  # após isso, a posição anterior deixa de ajudar
+    identity_threshold: float = 0.18  # mais flexível para rotações, expressões fortes e mudanças de luz
+    identity_weight: float = 0.55
+    iou_weight: float = 0.45
+    max_missing_frames: int = 30  # mantém a memória espacial por até ~1 segundo
+    grace_frames: int = 6         # segura o último alvo válido em movimentos bruscos/oclusões curtas
 
 
 class TargetFaceTracker:
@@ -44,6 +45,7 @@ class TargetFaceTracker:
         self.target_embedding = target_embedding / np.linalg.norm(target_embedding)
         self.config = config or TrackerConfig()
         self._last_bbox: np.ndarray | None = None
+        self._last_face: DetectedFace | None = None
         self._missing = 0
 
     @staticmethod
@@ -62,14 +64,19 @@ class TargetFaceTracker:
             overlap = iou(face.bbox, self._last_bbox) if use_position else 0.0
             if face.embedding is not None:
                 similarity = float(np.dot(face.embedding, self.target_embedding))
-                if similarity < cfg.identity_threshold:
-                    continue  # identidade diferente: nunca troca a pessoa errada
+                # Se a pessoa já está na mesma posição espacial (IoU alto) ou é a única pessoa na cena,
+                # relaxa o guardrail de identidade (ex: 0.10 em vez de 0.18) para não piscar ao virar o rosto de lado,
+                # mas ainda bloqueia outra pessoa diferente (similaridade próxima de 0 ou negativa).
+                effective_thresh = cfg.identity_threshold * 0.55 if (overlap >= 0.25 or len(faces) == 1) else cfg.identity_threshold
+                if similarity < effective_thresh:
+                    continue
                 score = cfg.identity_weight * similarity + cfg.iou_weight * overlap
             else:
-                # Se o embedding não foi calculado neste frame (modo rápido), confia no IoU com a última posição conhecida
-                if overlap < 0.2:
+                # Se o embedding não foi calculado neste frame (modo rápido), aceita IoU flexível
+                # ou se houver apenas 1 rosto próximo na cena
+                if overlap < 0.08 and len(faces) > 1:
                     continue
-                score = overlap
+                score = overlap if overlap > 0 else 0.1
 
             if score > best_score:
                 best, best_score = face, score
@@ -78,6 +85,13 @@ class TargetFaceTracker:
             self._missing += 1
         else:
             self._last_bbox = best.bbox.copy()
+            self._last_face = best
             self._missing = 0
+            # Atualiza suavemente o embedding de referência (EMA) apenas quando frontal/confiável
+            if best.embedding is not None and best.score >= 0.65:
+                blended = 0.92 * self.target_embedding + 0.08 * best.embedding
+                norm = np.linalg.norm(blended)
+                if norm > 1e-6:
+                    self.target_embedding = blended / norm
         return best
 

@@ -24,6 +24,7 @@ from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_enhancer import FaceEnhancer
+from src.face.face_occluder import XSegOccluder
 from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
 from src.face.face_swapper import INSwapperModel
 from src.face.face_tracker import TargetFaceTracker
@@ -69,6 +70,7 @@ class LivePipeline:
         compositor = FaceCompositor(blur_amount=feather_amount)
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.parser = FaceParser(self.device_manager) if enable_head_swap else None
+        self.occluder = XSegOccluder(self.device_manager)
         self.enhancer = FaceEnhancer(self.device_manager) if enable_enhancer else None
         self.smoother = TemporalSmoother()
         self.blend_intensity = blend_intensity
@@ -215,6 +217,7 @@ class LivePipeline:
                             enhancer_interval=self.enhancer_interval,
                             parser=None if self.use_legacy_bbox_restore else self.parser,
                             parser_interval=2,
+                            occluder=self.occluder,
                         )
 
                         # Método legado opcional (segundo passe com recorte variável via bbox) para comparação

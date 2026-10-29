@@ -3,7 +3,9 @@
 Baixa para a pasta models/:
 1. inswapper_128.onnx (modelo base de face swap)
 2. gfpgan_1.4.onnx (restauração e super-resolução facial)
-3. buffalo_l (SCRFD + ArcFace do InsightFace)
+3. bisenet_resnet_34.onnx (segmentação semântica facial de 19 classes)
+4. xseg_2.onnx (opcional — oclusão facial genérica para mãos e objetos)
+5. buffalo_l (SCRFD + ArcFace do InsightFace)
 """
 from __future__ import annotations
 
@@ -27,17 +29,32 @@ MODELS = {
         "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/inswapper_128.onnx",
         "dest": MODELS_DIR / "inswapper_128.onnx",
         "is_zip": False,
+        "optional": False,
     },
     "gfpgan_1.4.onnx": {
         "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/gfpgan_1.4.onnx",
         "dest": MODELS_DIR / "gfpgan_1.4.onnx",
         "is_zip": False,
+        "optional": False,
+    },
+    "bisenet_resnet_34.onnx": {
+        "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/bisenet_resnet_34.onnx",
+        "dest": MODELS_DIR / "bisenet_resnet_34.onnx",
+        "is_zip": False,
+        "optional": False,
+    },
+    "xseg_2.onnx": {
+        "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/xseg_2.onnx",
+        "dest": MODELS_DIR / "xseg_2.onnx",
+        "is_zip": False,
+        "optional": True,
     },
     "buffalo_l.zip": {
         "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
         "dest": MODELS_DIR / "models" / "buffalo_l.zip",
         "is_zip": True,
         "extract_to": MODELS_DIR / "models" / "buffalo_l",
+        "optional": False,
     },
 }
 
@@ -69,7 +86,13 @@ def main() -> int:
 
     for name, info in MODELS.items():
         dest = info["dest"]
-        download_file(info["url"], dest)
+        try:
+            download_file(info["url"], dest)
+        except Exception as exc:
+            if info.get("optional"):
+                logger.warning("Modelo opcional '%s' não pôde ser baixado (%s); prosseguindo sem ele.", name, exc)
+                continue
+            raise
         if info.get("is_zip"):
             extract_to = info["extract_to"]
             if not (extract_to / "det_10g.onnx").is_file():

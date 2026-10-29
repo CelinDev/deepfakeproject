@@ -24,7 +24,7 @@ from onnx import numpy_helper
 import onnxruntime as ort
 
 from config.settings import ALIGNED_MASK_SIZE, MODELS_DIR
-from src.core.interfaces import FaceSwapper
+from src.core.interfaces import FaceOccluder, FaceSwapper
 from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
@@ -90,6 +90,7 @@ class INSwapperModel(FaceSwapper):
         enhancer_interval: int = 1,
         parser: FaceParser | None = None,
         parser_interval: int = 1,
+        occluder: FaceOccluder | None = None,
     ) -> np.ndarray:
         if target_face.landmarks is None:
             return target_frame  # Sem marcos faciais, impossível alinhar
@@ -152,6 +153,11 @@ class INSwapperModel(FaceSwapper):
                 aligned_hi, out_size=ALIGNED_MASK_SIZE, reuse_interval=parser_interval
             )
 
+        # 8b. Máscara opcional de oclusão genérica (XSeg: mãos, copos, microfone, objetos arbitrários)
+        occluder_mask: np.ndarray | None = None
+        if occluder is not None and occluder.available:
+            occluder_mask = occluder.predict_mask(aligned_hi, out_size=ALIGNED_MASK_SIZE)
+
         # 9. Composição em alta resolução (512x512) sobre o frame original
         return self.compositor.composite(
             original_frame=target_frame,
@@ -162,5 +168,6 @@ class INSwapperModel(FaceSwapper):
             smoother=smoother,
             blend_intensity=blend_intensity,
             parser_mask=parser_mask,
+            occluder_mask=occluder_mask,
         )
 

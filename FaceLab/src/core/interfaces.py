@@ -36,6 +36,19 @@ class FaceSwapper(ABC):
         """Substitui o target_face no target_frame pelo source_face."""
 
 
+class FaceOccluder(ABC):
+    """Prediz a máscara contínua da região facial visível [0.0, 1.0], excluindo mãos e objetos."""
+
+    @property
+    @abstractmethod
+    def available(self) -> bool:
+        """Retorna True se os pesos do modelo de oclusão estão carregados e prontos."""
+
+    @abstractmethod
+    def predict_mask(self, aligned_crop: np.ndarray, out_size: int = 256) -> np.ndarray:
+        """Retorna máscara float32 (out_size, out_size) onde 1.0 = rosto visível e 0.0 = oclusão."""
+
+
 class FrameSource(ABC):
     """Fonte de quadros: arquivo de vídeo hoje, webcam no futuro."""
 

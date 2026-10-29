@@ -50,10 +50,12 @@ class FaceCompositor:
         crop_w: int,
         orig_crop_w: int,
         parser_mask: np.ndarray | None = None,
+        occluder_mask: np.ndarray | None = None,
         smoother: TemporalSmoother | None = None,
     ) -> np.ndarray:
         """Gera a máscara no espaço do crop alinhado (tamanho fixo ``self.mask_size``, ex. 256),
-        combinando probabilidades softmax do parser, elipse cacheada e EMA temporal.
+        combinando probabilidades softmax do parser, máscara opcional de oclusão (XSeg),
+        elipse cacheada e EMA temporal.
         """
         ms = self.mask_size
         base_ellipse = self.get_cached_ellipse(ms, ms).copy()
@@ -67,6 +69,14 @@ class FaceCompositor:
             mask_ms = base_ellipse * np.clip(pm, 0.0, 1.0)
         else:
             mask_ms = base_ellipse
+
+        if occluder_mask is not None:
+            om = (
+                occluder_mask
+                if occluder_mask.shape[:2] == (ms, ms)
+                else cv2.resize(occluder_mask.astype(np.float32), (ms, ms), interpolation=cv2.INTER_LINEAR)
+            )
+            mask_ms = mask_ms * np.clip(om, 0.0, 1.0)
 
         if smoother is not None:
             mask_ms = smoother.smooth_mask(mask_ms)
@@ -157,6 +167,7 @@ class FaceCompositor:
         smoother: TemporalSmoother | None = None,
         blend_intensity: float = 1.0,
         parser_mask: np.ndarray | None = None,
+        occluder_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves.
 
@@ -180,12 +191,13 @@ class FaceCompositor:
         # Matriz inversa (espaço do fake_crop -> espaço do quadro original)
         inv_affine = cv2.invertAffineTransform(scaled_m)
 
-        # Constrói máscara no espaço do crop alinhado (elipse cacheada * parser softmax + EMA temporal)
+        # Constrói máscara no espaço do crop alinhado (elipse cacheada * parser softmax * occluder + EMA temporal)
         mask = self.build_aligned_mask(
             crop_h=crop_h,
             crop_w=crop_w,
             orig_crop_w=orig_crop_w,
             parser_mask=parser_mask,
+            occluder_mask=occluder_mask,
             smoother=smoother,
         )
 

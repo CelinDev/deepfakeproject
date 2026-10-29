@@ -181,7 +181,7 @@ class LivePipeline:
 
                 t0 = time.perf_counter()
                 # Em tempo real, busca embedding apenas a cada 12 quadros para maximizar FPS
-                need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker._missing > 2)
+                need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker.missing > 2)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
 
                 # Inicializa tracker com a pessoa que estiver em frente à câmera

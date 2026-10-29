@@ -17,6 +17,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from config.settings import (
+    TRACKER_EMBEDDING_EMA_ALPHA,
+    TRACKER_EMBEDDING_UPDATE_SIM,
+    TRACKER_VELOCITY_TOLERANCE_FRAMES,
+)
 from src.core.types import DetectedFace
 
 
@@ -36,6 +41,9 @@ class TrackerConfig:
     iou_weight: float = 0.45
     max_missing_frames: int = 30  # mantém a memória espacial por até ~1 segundo
     grace_frames: int = 6         # segura o último alvo válido em movimentos bruscos/oclusões curtas
+    velocity_tolerance_frames: int = TRACKER_VELOCITY_TOLERANCE_FRAMES
+    embedding_ema_alpha: float = TRACKER_EMBEDDING_EMA_ALPHA
+    embedding_update_similarity: float = TRACKER_EMBEDDING_UPDATE_SIM
 
 
 class TargetFaceTracker:
@@ -45,8 +53,21 @@ class TargetFaceTracker:
         self.target_embedding = target_embedding / np.linalg.norm(target_embedding)
         self.config = config or TrackerConfig()
         self._last_bbox: np.ndarray | None = None
+        self._bbox_velocity: np.ndarray = np.zeros(4, dtype=np.float32)
         self._last_face: DetectedFace | None = None
         self._missing = 0
+
+    @property
+    def missing(self) -> int:
+        """Quantidade de quadros consecutivos em que o rosto-alvo esteve ausente."""
+        return self._missing
+
+    def predicted_bbox(self) -> np.ndarray | None:
+        """Estima a bbox atual extrapolando a velocidade linear da caixa anterior."""
+        if self._last_bbox is None:
+            return None
+        steps = min(self._missing + 1, self.config.velocity_tolerance_frames)
+        return (self._last_bbox + self._bbox_velocity * float(steps)).astype(np.float32)
 
     @staticmethod
     def select_largest(faces: list[DetectedFace]) -> DetectedFace | None:
@@ -58,10 +79,15 @@ class TargetFaceTracker:
         cfg = self.config
         best: DetectedFace | None = None
         best_score = -1.0
+        best_similarity = -1.0
         use_position = self._last_bbox is not None and self._missing <= cfg.max_missing_frames
+        pred_bbox = self.predicted_bbox() if use_position else None
 
         for face in faces:
-            overlap = iou(face.bbox, self._last_bbox) if use_position else 0.0
+            raw_overlap = iou(face.bbox, self._last_bbox) if use_position and self._last_bbox is not None else 0.0
+            pred_overlap = iou(face.bbox, pred_bbox) if pred_bbox is not None else 0.0
+            overlap = max(raw_overlap, pred_overlap)
+
             if face.embedding is not None:
                 similarity = float(np.dot(face.embedding, self.target_embedding))
                 # Se a pessoa já está na mesma posição espacial (IoU alto) ou é a única pessoa na cena,
@@ -72,26 +98,52 @@ class TargetFaceTracker:
                     continue
                 score = cfg.identity_weight * similarity + cfg.iou_weight * overlap
             else:
-                # Se o embedding não foi calculado neste frame (modo rápido), aceita IoU flexível
-                # ou se houver apenas 1 rosto próximo na cena
-                if overlap < 0.08 and len(faces) > 1:
+                similarity = -1.0
+                # Modo rápido sem embedding: usa IoU com predição de velocidade e distância ao centro predito
+                prox_score = 0.0
+                if pred_bbox is not None and self._missing <= cfg.velocity_tolerance_frames:
+                    pred_cx = 0.5 * float(pred_bbox[0] + pred_bbox[2])
+                    pred_cy = 0.5 * float(pred_bbox[1] + pred_bbox[3])
+                    pred_diag = float(np.hypot(pred_bbox[2] - pred_bbox[0], pred_bbox[3] - pred_bbox[1])) + 1e-6
+                    fcx, fcy = face.center
+                    dist_ratio = float(np.hypot(fcx - pred_cx, fcy - pred_cy)) / pred_diag
+                    # Tolera deslocamentos de até ~1.2x a diagonal prevista durante velocity_tolerance_frames
+                    if dist_ratio <= 1.25:
+                        prox_score = max(0.0, 1.0 - 0.75 * dist_ratio)
+
+                effective_spatial = max(overlap, prox_score * 0.5)
+                if effective_spatial < 0.06 and len(faces) > 1:
                     continue
-                score = overlap if overlap > 0 else 0.1
+                score = effective_spatial if effective_spatial > 0 else 0.1
 
             if score > best_score:
-                best, best_score = face, score
+                best, best_score, best_similarity = face, score, similarity
 
         if best is None:
             self._missing += 1
         else:
-            self._last_bbox = best.bbox.copy()
+            new_bbox = best.bbox.astype(np.float32).copy()
+            if self._last_bbox is not None and self._missing <= cfg.velocity_tolerance_frames:
+                dt_frames = float(max(1, self._missing + 1))
+                inst_vel = (new_bbox - self._last_bbox) / dt_frames
+                self._bbox_velocity = 0.60 * self._bbox_velocity + 0.40 * inst_vel
+            else:
+                self._bbox_velocity = np.zeros(4, dtype=np.float32)
+
+            self._last_bbox = new_bbox
             self._last_face = best
             self._missing = 0
-            # Atualiza suavemente o embedding de referência (EMA) apenas quando frontal/confiável
-            if best.embedding is not None and best.score >= 0.65:
-                blended = 0.92 * self.target_embedding + 0.08 * best.embedding
+            # Atualiza o embedding do alvo com média móvel lenta quando a similaridade for alta,
+            # permitindo tolerar óculos, chapéus ou variações graduais de ângulo/iluminação
+            if (
+                best.embedding is not None
+                and best_similarity >= cfg.embedding_update_similarity
+                and best.score >= 0.55
+            ):
+                alpha_emb = float(np.clip(cfg.embedding_ema_alpha, 0.01, 0.50))
+                blended = (1.0 - alpha_emb) * self.target_embedding + alpha_emb * best.embedding
                 norm = np.linalg.norm(blended)
                 if norm > 1e-6:
-                    self.target_embedding = blended / norm
+                    self.target_embedding = (blended / norm).astype(np.float32)
         return best
 

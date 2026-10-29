@@ -56,6 +56,37 @@ def test_select_largest() -> None:
     assert TargetFaceTracker.select_largest([]) is None
 
 
+def test_tracker_public_missing_and_velocity_prediction_without_embedding() -> None:
+    """Garante propriedade pública tracker.missing, predição por velocidade no modo sem embedding e EMA de identidade."""
+    tracker = TargetFaceTracker(PESSOA_A)
+    assert tracker.missing == 0
+
+    # Quadros 0 e 1 com embedding: rosto move-se rápido (+120px/frame), de modo que no quadro 2 o IoU com a caixa antiga seria 0
+    tracker.update([_face(0, PESSOA_A, size=100)])
+    tracker.update([_face(120, PESSOA_A, size=100)])
+
+    # Quadro 2 SEM embedding (embedding=None) em x=240, com segunda pessoa parada em x=700:
+    # Sem predição de velocidade, IoU([120,100,220,200], [240,100,340,200]) == 0.0 e descartaria!
+    fast_face_no_emb = DetectedFace(np.array([240.0, 100.0, 340.0, 200.0], np.float32), None, 0.9, None)
+    bystander_no_emb = DetectedFace(np.array([700.0, 100.0, 800.0, 200.0], np.float32), None, 0.9, None)
+    matched = tracker.update([bystander_no_emb, fast_face_no_emb])
+    assert matched is fast_face_no_emb
+    assert tracker.missing == 0
+
+    # Quando não há rostos, missing incrementa publicamente
+    assert tracker.update([]) is None
+    assert tracker.missing == 1
+
+    # Atualização lenta do embedding quando a similaridade é alta (ex: colocou óculos / virou levemente)
+    variacao_oculos = 0.85 * PESSOA_A + 0.15 * PESSOA_B
+    variacao_oculos = (variacao_oculos / np.linalg.norm(variacao_oculos)).astype(np.float32)
+    sim_before = float(np.dot(tracker.target_embedding, variacao_oculos))
+    tracker.update([_face(360, variacao_oculos, size=100)])
+    sim_after = float(np.dot(tracker.target_embedding, variacao_oculos))
+    assert sim_after > sim_before
+
+
+
 MODEL_DIR = MODELS_DIR / "models" / "buffalo_l"
 
 

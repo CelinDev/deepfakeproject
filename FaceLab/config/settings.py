@@ -54,6 +54,15 @@ LAPLACIAN_PYRAMID_LEVELS: int = 3          # Níveis da pirâmide laplaciana no 
 WARP_BACK_INTERPOLATION: str = "cubic"     # Interpolação no warp de volta ao frame: "cubic" ou "lanczos4"
 WARP_PREFILTER_SHRINK: bool = True         # Aplica pré-filtro gaussiano anti-aliasing quando o rosto no frame é menor que o crop
 
+# Parâmetros do Tracker (Seção 3), Alinhamento 106p (Seção 4) e Modelo de Swap (Seção 5)
+TRACKER_VELOCITY_TOLERANCE_FRAMES: int = 5   # Quadros tolerados usando predição de velocidade da bbox no modo sem embedding
+TRACKER_EMBEDDING_EMA_ALPHA: float = 0.05    # Taxa de atualização lenta do embedding do alvo quando similaridade é alta
+TRACKER_EMBEDDING_UPDATE_SIM: float = 0.60   # Similaridade mínima para atualizar o embedding do alvo com média móvel lenta
+USE_LANDMARK_106: bool = True                # Usa landmark_2d_106 do buffalo_l para estimativa de similaridade mais estável
+SMOOTH_TRANSFORM_PARAMS: bool = True         # Suaviza parâmetros da transformação (escala, rotação, translação) com One Euro Filter
+SWAPPER_MODEL_NAME: str = "inswapper_128"    # Modelo de swap padrão ("inswapper_128" ou "hyperswap_256")
+HYPERSWAP_256_MODEL_PATH: Path = MODELS_DIR / "hyperswap_1a_256.onnx"
+
 
 def find_executable(name: str) -> Path | None:
     """Localiza um executável (ex.: 'ffmpeg', 'ffprobe').

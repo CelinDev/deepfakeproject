@@ -176,7 +176,7 @@ class VideoPipeline:
                     raise KeyboardInterrupt("Processamento cancelado.")
 
                 t0 = time.perf_counter()
-                need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker._missing > 0)
+                need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
 
                 # Inicializa o tracker com o rosto principal do vídeo no primeiro quadro com rostos

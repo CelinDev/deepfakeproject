@@ -142,3 +142,49 @@ def test_webcam_source_keeps_only_latest_frame_and_sets_mjpg(monkeypatch: pytest
         src.close()
 
 
+def test_worker_ui_frame_drop_stop_before_pipeline_and_pipeline_cancelled() -> None:
+    """Garante descarte de quadros quando a UI está ocupada, stop() antes de self.pipeline existir e PipelineCancelled."""
+    from src.core.types import PipelineCancelled
+    from src.interface.worker import LiveWebcamWorker, VideoWorker
+
+    worker = LiveWebcamWorker(display_size=(320, 180))
+    emitted: list[tuple[np.ndarray, float]] = []
+    worker.frame_ready.connect(lambda img, fps: emitted.append((img, fps)))
+
+    full_hd = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    # 1º quadro: UI livre -> redimensiona na thread do worker para (320, 180) e emite
+    worker._emit_frame_if_ui_free(full_hd, 30.0)
+    assert len(emitted) == 1
+    assert emitted[0][0].shape == (180, 320, 3)
+
+    # 2º quadro enquanto a UI ainda não chamou mark_ui_ready() -> descartado sem acumular na fila
+    worker._emit_frame_if_ui_free(full_hd, 30.0)
+    assert len(emitted) == 1
+    assert worker.dropped_ui_frames == 1
+
+    # Libera a UI -> 3º quadro passa normalmente
+    worker.mark_ui_ready()
+    worker._emit_frame_if_ui_free(full_hd, 30.0)
+    assert len(emitted) == 2
+
+    # Testa stop() chamado ANTES de self.pipeline existir
+    worker_early_stop = LiveWebcamWorker()
+    stopped_flag = []
+    worker_early_stop.stopped.connect(lambda: stopped_flag.append(True))
+    worker_early_stop.stop()
+    worker_early_stop.run()
+    assert stopped_flag == [True]
+    assert worker_early_stop.pipeline is None
+
+    # Testa VideoWorker cancelado antes de iniciar -> usa PipelineCancelled em vez de KeyboardInterrupt
+    v_worker = VideoWorker(video_path="nao_existe.mp4")
+    errors: list[str] = []
+    v_worker.error.connect(lambda msg: errors.append(msg))
+    v_worker.cancel()
+    v_worker.run()
+    assert len(errors) == 1
+    assert "cancelado" in errors[0].lower()
+    assert issubclass(PipelineCancelled, Exception)
+
+
+

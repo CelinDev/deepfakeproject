@@ -49,18 +49,24 @@ from src.pipeline.video_pipeline import PipelineProgress
 logger = logging.getLogger(__name__)
 
 
-def cv2_to_pixmap(cv_img: np.ndarray | None, max_size=(540, 340)) -> QPixmap:
-    """Converte imagem BGR do OpenCV para QPixmap redimensionado mantendo proporção."""
+def cv2_to_pixmap(cv_img: np.ndarray | None, max_size: tuple[int, int] | None = (540, 340)) -> QPixmap:
+    """Converte imagem BGR do OpenCV para QPixmap (fazendo o resize via OpenCV sem SmoothTransformation lento na UI)."""
     if cv_img is None:
         return QPixmap()
-    h, w, ch = cv_img.shape
+    img = cv_img
+    if max_size is not None:
+        h, w = img.shape[:2]
+        max_w, max_h = max(1, int(max_size[0])), max(1, int(max_size[1]))
+        scale = min(float(max_w) / float(w), float(max_h) / float(h))
+        if abs(scale - 1.0) >= 1e-3:
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR)
+    h, w, ch = img.shape
+    rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     bytes_per_line = ch * w
-    rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-    q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-    pix = QPixmap.fromImage(q_img)
-    return pix.scaled(
-        max_size[0], max_size[1], Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-    )
+    q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+    return QPixmap.fromImage(q_img)
 
 
 class MainWindow(QWidget):
@@ -571,6 +577,8 @@ class MainWindow(QWidget):
         pref = [DevicePreference.AUTO, DevicePreference.GPU, DevicePreference.CPU][pref_idx]
 
         self.webcam_thread = QThread()
+        target_w = max(320, self.webcam_display.width() - 16)
+        target_h = max(240, self.webcam_display.height() - 16)
         self.webcam_worker = LiveWebcamWorker(
             image_path=self.image_path if has_source_img else None,
             camera_index=cam_idx,
@@ -580,6 +588,7 @@ class MainWindow(QWidget):
             feather_amount=self.slider_feather.value(),
             enable_zombie=False,
             target_face_index=self.combo_target_face.currentData(),
+            display_size=(target_w, target_h),
         )
         self.webcam_worker.moveToThread(self.webcam_thread)
 
@@ -597,12 +606,18 @@ class MainWindow(QWidget):
             self.btn_start_webcam.setEnabled(False)
 
     def _on_webcam_frame(self, frame_bgr: np.ndarray, fps: float) -> None:
-        self.lbl_webcam_fps.setText(f"LIVE FPS: {fps:.1f}")
-        # Calcula tamanho máximo proporcional ao container
-        target_w = max(320, self.webcam_display.width() - 16)
-        target_h = max(240, self.webcam_display.height() - 16)
-        pix = cv2_to_pixmap(frame_bgr, max_size=(target_w, target_h))
-        self.webcam_display.setPixmap(pix)
+        try:
+            self.lbl_webcam_fps.setText(f"LIVE FPS: {fps:.1f}")
+            if self.webcam_worker is not None:
+                target_w = max(320, self.webcam_display.width() - 16)
+                target_h = max(240, self.webcam_display.height() - 16)
+                self.webcam_worker.set_display_size(target_w, target_h)
+            # frame_bgr já chega redimensionado pela thread do worker (sem SmoothTransformation na thread principal)
+            pix = cv2_to_pixmap(frame_bgr, max_size=None)
+            self.webcam_display.setPixmap(pix)
+        finally:
+            if self.webcam_worker is not None:
+                self.webcam_worker.mark_ui_ready()
 
     def _on_webcam_error(self, err_msg: str) -> None:
         QMessageBox.warning(self, "Erro na Câmera", f"Não foi possível acessar a câmera:\n{err_msg}")

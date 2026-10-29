@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 
 from config.settings import OUTPUT_DIR, USE_LEGACY_BBOX_RESTORE, ZOMBIE_REFERENCE_IMAGE
-from src.core.types import DetectedFace
+from src.core.types import DetectedFace, PipelineCancelled
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
@@ -176,7 +176,7 @@ class VideoPipeline:
                 if self._is_cancelled:
                     logger.warning("Processamento cancelado pelo usuário.")
                     sink.abort()
-                    raise KeyboardInterrupt("Processamento cancelado.")
+                    raise PipelineCancelled("Processamento cancelado pelo usuário.")
 
                 t0 = time.perf_counter()
                 need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)

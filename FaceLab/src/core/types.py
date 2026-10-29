@@ -12,6 +12,10 @@ from pathlib import Path
 import numpy as np
 
 
+class PipelineCancelled(Exception):
+    """Exceção própria lançada quando o pipeline de vídeo é cancelado pelo usuário."""
+
+
 @dataclass(frozen=True)
 class VideoInfo:
     """Metadados de um vídeo, obtidos com ffprobe.

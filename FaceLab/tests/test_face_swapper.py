@@ -86,3 +86,42 @@ def test_inswapper_initialization() -> None:
     assert swapper.session is not None
     assert "CUDAExecutionProvider" in swapper.active_providers or "CPUExecutionProvider" in swapper.active_providers
 
+
+def test_match_color_hist_skin_mask_and_clamped_gain() -> None:
+    """Garante que match_color_hist calcule estatísticas apenas na máscara de pele e limite o ganho entre 0.8 e 1.25."""
+    compositor = FaceCompositor()
+
+    # Source tem contraste baixo (desvio ~8); Target tem pele clara na metade inferior, mas barba/cabelo preto (0) na metade superior
+    rng = np.random.default_rng(7)
+    src = np.clip(120 + rng.normal(0.0, 8.0, size=(128, 128, 3)), 0, 255).astype(np.uint8)
+    tgt = np.zeros((128, 128, 3), dtype=np.uint8)
+    # Metade inferior do target = pele clara (valor médio ~200, alto contraste std ~45)
+    tgt[64:, :, :] = np.clip(200 + rng.normal(0.0, 45.0, size=(64, 128, 3)), 0, 255).astype(np.uint8)
+
+    # Máscara de pele indica apenas a metade inferior (ignora a metade superior preta)
+    skin_mask = np.zeros((128, 128), dtype=np.float32)
+    skin_mask[70:120, 20:108] = 1.0
+
+    # Sem máscara de pele (elipse pega metade preta + metade clara -> escurece o resultado)
+    out_no_mask = compositor.match_color_hist(src, tgt, skin_mask=None)
+    # Com máscara de pele restrita à metade inferior -> resultado é claramente mais iluminado
+    out_skin_mask = compositor.match_color_hist(
+        src, tgt, skin_mask=skin_mask, std_gain_min=0.80, std_gain_max=1.25, enable_border_lowfreq=False
+    )
+
+    assert float(out_skin_mask[90, 64].mean()) > float(out_no_mask[90, 64].mean()) + 20.0
+
+    # Verifica que o ganho de desvio padrão na pele foi limitado a <= 1.25 (não explodiu 5.6x de std 8 para std 45)
+    src_lab_l = cv2.cvtColor(src, cv2.COLOR_BGR2LAB)[70:120, 20:108, 0].astype(np.float32)
+    out_lab_l = cv2.cvtColor(out_skin_mask, cv2.COLOR_BGR2LAB)[70:120, 20:108, 0].astype(np.float32)
+    ratio_std = float(out_lab_l.std() / (src_lab_l.std() + 1e-6))
+    assert 0.80 <= ratio_std <= 1.35
+
+    # E garante que o modo opcional enable_border_lowfreq roda suavizando a faixa de transição na borda
+    out_border = compositor.match_color_hist(
+        src, tgt, skin_mask=skin_mask, std_gain_min=0.80, std_gain_max=1.25, enable_border_lowfreq=True
+    )
+    assert out_border.shape == src.shape
+    assert float(out_border[72, 64].mean()) < float(out_skin_mask[95, 64].mean())
+
+

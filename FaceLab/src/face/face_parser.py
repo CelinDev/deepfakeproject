@@ -97,6 +97,7 @@ class FaceParser:
         self.output_name = self._session.get_outputs()[0].name
         self._cached_mask_roi: np.ndarray | None = None
         self._cached_aligned_prob: np.ndarray | None = None
+        self._cached_skin_prob: np.ndarray | None = None
         self._frame_counter: int = 0
         logger.info("FaceParser (BiSeNet) carregado. Providers: %s", self._session.get_providers())
 
@@ -104,7 +105,13 @@ class FaceParser:
         """Limpa os caches de máscara temporal."""
         self._cached_mask_roi = None
         self._cached_aligned_prob = None
+        self._cached_skin_prob = None
         self._frame_counter = 0
+
+    @property
+    def last_skin_mask(self) -> np.ndarray | None:
+        """Retorna a última máscara contínua [0.0, 1.0] apenas da classe pele (skin=1)."""
+        return self._cached_skin_prob
 
     @staticmethod
     def _softmax_channels(logits: np.ndarray) -> np.ndarray:
@@ -143,13 +150,17 @@ class FaceParser:
         occ_prob = np.sum(probs[list(ALIGNED_OCCLUSION_CLASSES)], axis=0)
         # Combina a probabilidade contínua da face com a supressão explícita das oclusões
         soft_mask_512 = np.clip(face_prob * (1.0 - occ_prob), 0.0, 1.0).astype(np.float32)
+        skin_mask_512 = np.clip(probs[1] * (1.0 - occ_prob), 0.0, 1.0).astype(np.float32)
 
         if out_size != 512:
             soft_mask = cv2.resize(soft_mask_512, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
+            skin_mask = cv2.resize(skin_mask_512, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
         else:
             soft_mask = soft_mask_512
+            skin_mask = skin_mask_512
 
         self._cached_aligned_prob = soft_mask
+        self._cached_skin_prob = skin_mask
         return soft_mask
 
     def _download_model(self) -> None:

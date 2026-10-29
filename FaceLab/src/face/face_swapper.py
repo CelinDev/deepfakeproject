@@ -148,10 +148,12 @@ class INSwapperModel(FaceSwapper):
 
         # 8. Máscara semântica contínua (softmax) no espaço do crop alinhado (inclui oclusão de cabelo/orelhas/pescoço/óculos)
         parser_mask: np.ndarray | None = None
+        skin_mask: np.ndarray | None = None
         if parser is not None:
             parser_mask = parser.parse_probabilities(
                 aligned_hi, out_size=ALIGNED_MASK_SIZE, reuse_interval=parser_interval
             )
+            skin_mask = parser.last_skin_mask
 
         # 8b. Máscara opcional de oclusão genérica (XSeg: mãos, copos, microfone, objetos arbitrários)
         occluder_mask: np.ndarray | None = None
@@ -169,5 +171,6 @@ class INSwapperModel(FaceSwapper):
             blend_intensity=blend_intensity,
             parser_mask=parser_mask,
             occluder_mask=occluder_mask,
+            skin_mask=skin_mask,
         )
 

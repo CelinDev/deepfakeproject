@@ -10,7 +10,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from config.settings import ALIGNED_MASK_SIZE
+from config.settings import (
+    ALIGNED_MASK_SIZE,
+    COLOR_STD_GAIN_MAX,
+    COLOR_STD_GAIN_MIN,
+    ENABLE_BORDER_LOWFREQ_COLOR,
+)
 from src.face.temporal_smoother import TemporalSmoother
 
 
@@ -107,11 +112,17 @@ class FaceCompositor:
         source: np.ndarray,
         target: np.ndarray,
         smoother: TemporalSmoother | None = None,
+        skin_mask: np.ndarray | None = None,
+        std_gain_min: float = COLOR_STD_GAIN_MIN,
+        std_gain_max: float = COLOR_STD_GAIN_MAX,
+        enable_border_lowfreq: bool = ENABLE_BORDER_LOWFREQ_COLOR,
     ) -> np.ndarray:
-        """Transferência perceptual de cor no espaço CIE LAB restrita à zona central da pele.
+        """Transferência perceptual de cor no espaço CIE LAB restrita apenas à máscara de pele.
 
-        Evita que sombras de fundo ou cabelos escuros nas bordas do crop 128x128
-        contaminem o tom de pele ou a iluminação do rosto trocado.
+        Calcula média e desvio padrão exclusivamente dentro da máscara de pele (ou elipse central
+        caso a máscara não seja fornecida), aplica ganho limitado na razão de desvios padrão
+        (padrão ``[0.80, 1.25]``) e suaviza temporalmente as estatísticas. Opcionalmente aplica
+        correção de iluminação de baixa frequência por razão de blur gaussiano grande na faixa de borda.
         """
         src_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype(np.float32)
         if target.shape[:2] != source.shape[:2]:
@@ -119,9 +130,24 @@ class FaceCompositor:
         tgt_lab = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype(np.float32)
 
         h, w = source.shape[:2]
-        skin_roi = np.zeros((h, w), dtype=np.uint8)
-        cv2.ellipse(skin_roi, (w // 2, int(h * 0.52)), (int(w * 0.32), int(h * 0.36)), 0, 0, 360, 255, -1)
-        roi_bool = skin_roi > 0
+        roi_bool: np.ndarray | None = None
+        sm_resized: np.ndarray | None = None
+        if skin_mask is not None:
+            sm_resized = (
+                skin_mask.astype(np.float32)
+                if skin_mask.shape[:2] == (h, w)
+                else cv2.resize(skin_mask.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+            )
+            candidate_bool = sm_resized > 0.25
+            if int(np.count_nonzero(candidate_bool)) >= 64:
+                roi_bool = candidate_bool
+
+        if roi_bool is None:
+            skin_roi = np.zeros((h, w), dtype=np.uint8)
+            cv2.ellipse(skin_roi, (w // 2, int(h * 0.52)), (int(w * 0.32), int(h * 0.36)), 0, 0, 360, 255, -1)
+            roi_bool = skin_roi > 0
+            if sm_resized is None:
+                sm_resized = (skin_roi.astype(np.float32) / 255.0)
 
         s_pixels = src_lab[roi_bool]
         t_pixels = tgt_lab[roi_bool]
@@ -138,9 +164,22 @@ class FaceCompositor:
         for c in range(3):
             # No canal L (luminância), transfere 90% do contraste real; nos canais A/B (cor), 85% para naturalidade
             scale = 0.90 if c == 0 else 0.85
-            std_ratio = 1.0 + scale * ((t_std[c] / s_std[c]) - 1.0)
+            raw_ratio = 1.0 + scale * ((t_std[c] / s_std[c]) - 1.0)
+            std_ratio = float(np.clip(raw_ratio, std_gain_min, std_gain_max))
             channel = (src_lab[..., c] - s_mean[c]) * std_ratio + (scale * t_mean[c] + (1.0 - scale) * s_mean[c])
-            matched_lab[..., c] = np.clip(channel, 0, 255)
+            matched_lab[..., c] = np.clip(channel, 0.0, 255.0)
+
+        if enable_border_lowfreq and sm_resized is not None:
+            # Faixa de transição na borda da máscara de pele (4 * m * (1 - m) atinge pico 1.0 em m = 0.5)
+            sigma = max(7.0, float(min(h, w)) * 0.12)
+            soft_m = cv2.GaussianBlur(np.clip(sm_resized, 0.0, 1.0), (0, 0), sigmaX=sigma * 0.5)
+            border_weight = np.clip(4.0 * soft_m * (1.0 - soft_m), 0.0, 1.0)[..., np.newaxis]
+
+            low_src = cv2.GaussianBlur(matched_lab, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            low_tgt = cv2.GaussianBlur(tgt_lab, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            ratio = np.clip((low_tgt + 1.0) / (low_src + 1.0), std_gain_min, std_gain_max)
+            corrected_border = np.clip(matched_lab * ratio, 0.0, 255.0)
+            matched_lab = matched_lab * (1.0 - border_weight) + corrected_border * border_weight
 
         return cv2.cvtColor(matched_lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
@@ -168,6 +207,8 @@ class FaceCompositor:
         blend_intensity: float = 1.0,
         parser_mask: np.ndarray | None = None,
         occluder_mask: np.ndarray | None = None,
+        skin_mask: np.ndarray | None = None,
+        enable_border_lowfreq: bool = ENABLE_BORDER_LOWFREQ_COLOR,
     ) -> np.ndarray:
         """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves.
 
@@ -178,8 +219,15 @@ class FaceCompositor:
         crop_h, crop_w = fake_crop.shape[:2]
         orig_crop_h, orig_crop_w = aligned_original_crop.shape[:2]
 
+        effective_skin_mask = skin_mask if skin_mask is not None else parser_mask
         if color_correct:
-            fake_crop = self.match_color_hist(fake_crop, aligned_original_crop, smoother=smoother)
+            fake_crop = self.match_color_hist(
+                fake_crop,
+                aligned_original_crop,
+                smoother=smoother,
+                skin_mask=effective_skin_mask,
+                enable_border_lowfreq=enable_border_lowfreq,
+            )
             fake_crop = self.inject_skin_microtexture(fake_crop, aligned_original_crop, strength=0.22)
 
         # Fator de escala entre o fake_crop (ex: 512px do GFPGAN) e o aligned_original_crop (ex: 128px)

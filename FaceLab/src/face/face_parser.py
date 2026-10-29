@@ -49,14 +49,14 @@ FACE_PARSER_CLASSES = {
 }
 
 # Classes de oclusão e proteção de fundo (elementos que NÃO devem receber o tom do rosto)
-# 0: background (fundo do cenário), 7: orelha esq, 8: orelha dir, 9: brincos, 14: pescoço, 15: colares, 16: roupas, 17: cabelo, 18: chapéus
+# Inclui também o interior da boca (11: dentes/língua) e óculos (6) para realismo máximo ao falar.
 NATURAL_HAIR_AND_OCCLUSION_CLASSES = frozenset({
-    0,   # background / fundo da cena (elimina qualquer aura verde no ar)
+    0,   # background / fundo da cena (elimina qualquer aura no ar)
+    6,   # óculos (preserva armação/lentes reais)
     7,   # orelha esquerda
     8,   # orelha direita
     9,   # brincos
-    14,  # pescoço
-    15,  # adornos do pescoço
+    11,  # interior da boca / dentes reais (elimina dentes borrados em 128x128 ao falar/sorrir)
     16,  # roupas / ombros
     17,  # cabelo
     18,  # chapéu / adereços
@@ -79,6 +79,8 @@ class FaceParser:
         self._session = ort.InferenceSession(str(self.model_path), providers=providers)
         self.input_name = self._session.get_inputs()[0].name
         self.output_name = self._session.get_outputs()[0].name
+        self._cached_mask_roi: np.ndarray | None = None
+        self._frame_counter: int = 0
         logger.info("FaceParser (BiSeNet) carregado. Providers: %s", self._session.get_providers())
 
     def _download_model(self) -> None:
@@ -91,20 +93,29 @@ class FaceParser:
         urllib.request.urlretrieve(url, str(self.model_path))
         logger.info("Download do BiSeNet concluído!")
 
+    @staticmethod
+    def preprocess(image_bgr: np.ndarray, size: tuple[int, int] = (512, 512)) -> np.ndarray:
+        """Pré-processa uma imagem BGR para o tensor NCHW float32 esperado pelo BiSeNet (ImageNet RGB).
+
+        Nota: anteriormente ``cv2.dnn.blobFromImage`` recebia ``mean=(0.485, 0.456, 0.406)`` na escala
+        0..255 antes de multiplicar por ``1/255``, o que quase não subtraía a média. Aqui normalizamos
+        corretamente em ``[0, 1]`` e aplicamos ``(rgb - mean) / std``.
+        """
+        resized = (
+            image_bgr
+            if image_bgr.shape[:2] == size
+            else cv2.resize(image_bgr, size, interpolation=cv2.INTER_LINEAR)
+        )
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        norm = (rgb - mean) / std
+        return norm.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
+
     def parse(self, image: np.ndarray) -> np.ndarray:
         """Executa a inferência e retorna mapa de índices 2D (0 a 18)."""
         h, w = image.shape[:2]
-        resized = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
-        blob = cv2.dnn.blobFromImage(
-            resized,
-            scalefactor=1.0 / 255.0,
-            size=(512, 512),
-            mean=(0.485, 0.456, 0.406),
-            swapRB=True,
-            crop=False,
-        )
-        blob = blob / np.array([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
-        blob = blob.astype(np.float32)
+        blob = self.preprocess(image, size=(512, 512))
 
         preds = self._session.run([self.output_name], {self.input_name: blob})[0]
         mask_512 = np.argmax(preds[0], axis=0).astype(np.uint8)
@@ -130,6 +141,7 @@ class FaceParser:
         original_frame: np.ndarray,
         target_face: DetectedFace | None = None,
         feather: int = 5,
+        reuse_interval: int = 1,
     ) -> np.ndarray:
         """
         Restaura com fidelidade orgânica o cabelo real, orelhas, franja e óculos da pessoa original.
@@ -138,23 +150,33 @@ class FaceParser:
         acompanhando a física, balanço e iluminação da cena com perfeição fotorrealista.
         """
         h, w = original_frame.shape[:2]
+        self._frame_counter += 1
 
         # Se houver bounding box, fazemos na ROI expandida para altíssima performance
         if target_face is not None and target_face.bbox is not None:
             x1, y1, x2, y2 = [int(v) for v in target_face.bbox]
-            pad_x = int((x2 - x1) * 0.45)
-            pad_y = int((y2 - y1) * 0.45)
+            pad_x = int((x2 - x1) * 0.40)
+            pad_y = int((y2 - y1) * 0.40)
             rx1, ry1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
             rx2, ry2 = min(w, x2 + pad_x), min(h, y2 + pad_y)
 
             roi_orig = original_frame[ry1:ry2, rx1:rx2]
             roi_swap = swapped_frame[ry1:ry2, rx1:rx2]
+            roi_h, roi_w = roi_orig.shape[:2]
 
-            mask_roi = self.extract_mask(
-                roi_orig,
-                classes=NATURAL_HAIR_AND_OCCLUSION_CLASSES,
-                feather=feather,
-            )
+            if (
+                reuse_interval > 1
+                and self._cached_mask_roi is not None
+                and self._frame_counter % reuse_interval != 0
+            ):
+                mask_roi = cv2.resize(self._cached_mask_roi, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                mask_roi = self.extract_mask(
+                    roi_orig,
+                    classes=NATURAL_HAIR_AND_OCCLUSION_CLASSES,
+                    feather=feather,
+                )
+                self._cached_mask_roi = mask_roi
 
             alpha = np.expand_dims(np.clip(mask_roi, 0.0, 1.0), axis=-1)
             roi_blended = np.clip(

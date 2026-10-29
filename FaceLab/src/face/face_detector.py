@@ -30,8 +30,8 @@ class InsightFaceDetector(FaceDetector):
         self,
         device_manager: DeviceManager,
         model_name: str = "buffalo_l",
-        det_size: tuple[int, int] = (640, 640),
-        det_thresh: float = 0.5,
+        det_size: tuple[int, int] = (1024, 1024),
+        det_thresh: float = 0.35,
         with_embedding: bool = True,
     ) -> None:
         # Import tardio: os testes que não usam o modelo não precisam do insightface.
@@ -60,13 +60,39 @@ class InsightFaceDetector(FaceDetector):
         if hasattr(self._app, "det_model") and hasattr(self._app.det_model, "det_thresh"):
             self._app.det_model.det_thresh = float(threshold)
 
+    def set_detection_size(self, det_size: tuple[int, int]) -> None:
+        """Ajusta dinamicamente a resolução da grade de detecção (ex: 1024x1024 ou 640x640)."""
+        if hasattr(self._app, "det_model"):
+            self._app.det_model.prepare(
+                ctx_id=0,
+                input_size=tuple(det_size),
+                det_thresh=getattr(self._app.det_model, "det_thresh", 0.35),
+            )
+        if hasattr(self._app, "det_size"):
+            self._app.det_size = tuple(det_size)
+
+    def _current_det_size(self) -> tuple[int, int]:
+        if hasattr(self._app, "det_model") and hasattr(self._app.det_model, "input_size"):
+            return tuple(self._app.det_model.input_size)
+        return getattr(self._app, "det_size", (640, 640))
+
     def detect(self, image: np.ndarray, compute_embeddings: bool = True) -> list[DetectedFace]:
+        cur_size = self._current_det_size()
         if compute_embeddings or "recognition" not in self._app.models:
             faces = self._app.get(image)
+            # Fallback multi-escala (se o rosto ocupar a foto inteira / close-up e passar do stride máximo de 1024x1024)
+            if not faces and cur_size != (640, 640):
+                self.set_detection_size((640, 640))
+                faces = self._app.get(image)
+                self.set_detection_size(cur_size)
         else:
             # OTIMIZAÇÃO (Fase 6): executa somente detecção de caixas e 5 marcos faciais (SCRFD),
             # sem rodar a rede neural profunda ArcFace (que só é necessária quando rastreamos por identidade).
             bboxes, kpss = self._app.det_model.detect(image, max_num=0, metric="default")
+            if bboxes.shape[0] == 0 and cur_size != (640, 640):
+                self.set_detection_size((640, 640))
+                bboxes, kpss = self._app.det_model.detect(image, max_num=0, metric="default")
+                self.set_detection_size(cur_size)
             faces = []
             if bboxes.shape[0] > 0:
                 for i in range(bboxes.shape[0]):

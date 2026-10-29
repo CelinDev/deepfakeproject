@@ -157,16 +157,20 @@ def upload_single_installer_to_github(installer_exe: Path) -> str:
     with urllib.request.urlopen(req_get) as resp:
         release = json.loads(resp.read().decode())
 
-    # Atualiza a descrição da release para destacar o instalador único
+    # Atualiza a descrição da release para destacar o instalador único e as novas funcionalidades
     body_notes = (
         "## ⚡ FaceLab Studio v1.0.0 — Instalador Completo (Windows x64)\n\n"
         "### ✨ Destaques desta versão\n"
-        "- **Instalador em Arquivo Único (`FaceLab-Setup-v1.0.0.exe`)**: instala o FaceLab Studio completo, cria atalhos na Área de Trabalho e no Menu Iniciar, e não requer instalação prévia de Python, CUDA ou FFmpeg.\n"
+        "- **Instalador em Arquivo Único (`FaceLab-Setup-v1.0.0.exe`)**: instala o FaceLab Studio completo, cria atalhos na Área de Trabalho e no Menu Iniciar, sem requerer instalação prévia de Python, CUDA ou FFmpeg.\n"
+        "- **Restauração Facial em Alta Fidelidade (GFPGAN 512px)**: realce facial em resolução máxima com reescalonamento afim e suporte a interpolação temporal de frames na webcam.\n"
+        "- **Fluidez e Rastreamento Ultra-Estável**: One Euro Filter para landmarks e bbox sem jitter e com resposta imediata a movimentos rápidos, hold inteligente com fade-out na perda do rosto, e suporte a landmarks de 106 pontos.\n"
+        "- **Segmentação Semântica e Blending Orgânico**: BiSeNet com pré-processamento calibrado em escala [-1, 1], elipse adaptativa, correção de cor no espaço LAB restrita à máscara de pele, e multi-band blending laplaciano com bordas gaussianas.\n"
+        "- **Pipeline de Vídeo Offline de 2 Passes**: 1º passe com suavização não-causal (Savitzky-Golay / Gaussiana) e 2º passe de swap com zero latência e processamento concorrente desacoplado.\n"
+        "- **Modo Live Otimizado para Webcam**: captura multithread bufferless (`CAP_PROP_BUFFERSIZE=1`), redetecção esparsa com Lucas-Kanade, cancelamento limpo e descarte automático de quadros acumulados na UI.\n"
         "- **Download Obrigatório de Modelos no 1º Uso**: pacote enxuto sem a pasta pesada `models/`. "
         "Ao abrir o FaceLab Studio pela primeira vez, uma janela interativa solicita e baixa automaticamente "
         "todos os modelos necessários (`inswapper_128`, `gfpgan_1.4`, `bisenet_resnet_34` e `buffalo_l`).\n"
         "- **Presets Cinematográficos em 8K**: Zumbi Hiper-realista, Vampiro Nobre e Ciborgue Futurista.\n"
-        "- **Segmentação Semântica (BiSeNet)** para preservação orgânica de cabelos e orelhas.\n"
         "- **Super-Resolução e Aceleração por GPU NVIDIA (CUDA 12 / cuDNN 9)** com fallback automático para CPU.\n\n"
         "### 🚀 Como instalar e usar\n"
         "1. Baixe e execute o arquivo único **`FaceLab-Setup-v1.0.0.exe`** abaixo.\n"

@@ -141,6 +141,9 @@ class LivePipeline:
         camera_index: int = 0,
         width: int = 1280,
         height: int = 720,
+        target_embedding: np.ndarray | None = None,
+        target_face_index: int | None = None,
+        target_point: tuple[float, float] | None = None,
     ) -> None:
         """Inicia o laço de captura, troca facial e renderização em tempo real."""
         source_face: DetectedFace | None = None
@@ -184,11 +187,17 @@ class LivePipeline:
                 need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker.missing > 2)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
 
-                # Inicializa tracker com a pessoa que estiver em frente à câmera
+                # Inicializa tracker com o rosto escolhido manualmente (embedding, clique, índice) ou o maior rosto
                 if tracker is None and faces:
-                    alvo = TargetFaceTracker.select_largest(faces)
+                    alvo = TargetFaceTracker.select_target(
+                        faces,
+                        target_embedding=target_embedding,
+                        target_index=target_face_index,
+                        target_point=target_point,
+                    )
                     if alvo and alvo.embedding is not None:
                         tracker = TargetFaceTracker(alvo.embedding)
+                        tracker._last_bbox = alvo.bbox.astype(np.float32).copy()
 
                 target = tracker.update(faces) if tracker else None
                 fade_factor = 1.0

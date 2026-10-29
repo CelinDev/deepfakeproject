@@ -86,6 +86,26 @@ def test_tracker_public_missing_and_velocity_prediction_without_embedding() -> N
     assert sim_after > sim_before
 
 
+def test_select_target_manual_by_index_point_and_embedding() -> None:
+    """Garante a seleção manual do rosto-alvo por clique (x, y), índice ordenado (esq->dir) ou embedding."""
+    f_left = _face(20, PESSOA_A, size=80)    # centro (60, 140), menor
+    f_right = _face(400, PESSOA_B, size=180) # centro (490, 190), maior
+
+    faces = [f_right, f_left]
+
+    # Por padrão sem argumentos, escolhe o maior (f_right)
+    assert TargetFaceTracker.select_target(faces) is f_right
+    # Por índice 0 (esquerda -> direita), escolhe f_left mesmo sendo menor
+    assert TargetFaceTracker.select_target(faces, target_index=0) is f_left
+    assert TargetFaceTracker.select_target(faces, target_index=1) is f_right
+    # Por clique (x, y) dentro ou próximo de f_left
+    assert TargetFaceTracker.select_target(faces, target_point=(55.0, 135.0)) is f_left
+    assert TargetFaceTracker.select_target(faces, target_point=(480.0, 180.0)) is f_right
+    # Por embedding específico
+    assert TargetFaceTracker.select_target(faces, target_embedding=PESSOA_A) is f_left
+
+
+
 
 MODEL_DIR = MODELS_DIR / "models" / "buffalo_l"
 

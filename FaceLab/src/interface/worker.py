@@ -36,6 +36,7 @@ class VideoWorker(QObject):
         color_correct: bool = True,
         feather_amount: int = 15,
         enable_zombie: bool = False,
+        target_face_index: int | None = None,
     ) -> None:
         super().__init__()
         self.video_path = video_path
@@ -47,6 +48,7 @@ class VideoWorker(QObject):
         self.color_correct = color_correct
         self.feather_amount = feather_amount
         self.enable_zombie = enable_zombie
+        self.target_face_index = target_face_index
         self.pipeline: VideoPipeline | None = None
 
     def cancel(self) -> None:
@@ -70,6 +72,7 @@ class VideoWorker(QObject):
                 video_path=self.video_path,
                 source_image_path=self.image_path,
                 output_path=self.output_path,
+                target_face_index=self.target_face_index,
             )
             self.finished.emit(str(out_file))
         except KeyboardInterrupt:
@@ -95,6 +98,7 @@ class LiveWebcamWorker(QObject):
         color_correct: bool = True,
         feather_amount: int = 15,
         enable_zombie: bool = False,
+        target_face_index: int | None = None,
     ) -> None:
         super().__init__()
         self.image_path = image_path
@@ -104,6 +108,7 @@ class LiveWebcamWorker(QObject):
         self.color_correct = color_correct
         self.feather_amount = feather_amount
         self.enable_zombie = enable_zombie
+        self.target_face_index = target_face_index
         self.pipeline: LivePipeline | None = None
 
     def stop(self) -> None:
@@ -143,6 +148,7 @@ class LiveWebcamWorker(QObject):
             self.pipeline.run(
                 source_image_path=self.image_path,
                 camera_index=self.camera_index,
+                target_face_index=self.target_face_index,
             )
             self.stopped.emit()
         except Exception as exc:

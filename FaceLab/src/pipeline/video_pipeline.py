@@ -121,6 +121,9 @@ class VideoPipeline:
         video_path: str | Path,
         source_image_path: str | Path | None = None,
         output_path: str | Path | None = None,
+        target_embedding: np.ndarray | None = None,
+        target_face_index: int | None = None,
+        target_point: tuple[float, float] | None = None,
     ) -> Path:
         """Executa o processamento completo do vídeo."""
         self._is_cancelled = False
@@ -179,11 +182,17 @@ class VideoPipeline:
                 need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
 
-                # Inicializa o tracker com o rosto principal do vídeo no primeiro quadro com rostos
+                # Inicializa o tracker com o rosto escolhido manualmente (embedding, clique, índice) ou o maior rosto
                 if tracker is None and faces:
-                    primeiro_alvo = TargetFaceTracker.select_largest(faces)
+                    primeiro_alvo = TargetFaceTracker.select_target(
+                        faces,
+                        target_embedding=target_embedding,
+                        target_index=target_face_index,
+                        target_point=target_point,
+                    )
                     if primeiro_alvo and primeiro_alvo.embedding is not None:
                         tracker = TargetFaceTracker(primeiro_alvo.embedding)
+                        tracker._last_bbox = primeiro_alvo.bbox.astype(np.float32).copy()
 
                 # Rastreia o alvo consistente ao longo do vídeo
                 target = tracker.update(faces) if tracker else None

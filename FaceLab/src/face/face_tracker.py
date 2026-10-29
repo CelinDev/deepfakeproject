@@ -74,6 +74,56 @@ class TargetFaceTracker:
         """Heurística padrão para escolher o alvo: o maior rosto."""
         return max(faces, key=lambda f: f.area, default=None)
 
+    @staticmethod
+    def sort_left_to_right(faces: list[DetectedFace]) -> list[DetectedFace]:
+        """Ordena os rostos detectados da esquerda para a direita (coordenada x central)."""
+        return sorted(faces, key=lambda f: f.center[0])
+
+    @classmethod
+    def select_by_index(cls, faces: list[DetectedFace], index: int) -> DetectedFace | None:
+        """Seleciona o rosto pelo índice na lista ordenada da esquerda para a direita."""
+        if not faces:
+            return None
+        ordered = cls.sort_left_to_right(faces)
+        idx = int(np.clip(index, 0, len(ordered) - 1))
+        return ordered[idx]
+
+    @staticmethod
+    def select_by_point(faces: list[DetectedFace], point_xy: tuple[float, float]) -> DetectedFace | None:
+        """Seleciona o rosto clicado em ``point_xy = (x, y)`` (contido na bbox ou mais próximo do centro)."""
+        if not faces:
+            return None
+        px, py = float(point_xy[0]), float(point_xy[1])
+        inside = [
+            f for f in faces
+            if f.bbox[0] <= px <= f.bbox[2] and f.bbox[1] <= py <= f.bbox[3]
+        ]
+        if inside:
+            return min(inside, key=lambda f: np.hypot(f.center[0] - px, f.center[1] - py))
+        return min(faces, key=lambda f: np.hypot(f.center[0] - px, f.center[1] - py))
+
+    @classmethod
+    def select_target(
+        cls,
+        faces: list[DetectedFace],
+        target_embedding: np.ndarray | None = None,
+        target_index: int | None = None,
+        target_point: tuple[float, float] | None = None,
+    ) -> DetectedFace | None:
+        """Seleciona manualmente o rosto-alvo inicial por embedding, clique (x, y), índice ou maior área."""
+        if not faces:
+            return None
+        if target_embedding is not None:
+            norm_t = target_embedding / (np.linalg.norm(target_embedding) + 1e-8)
+            with_emb = [f for f in faces if f.embedding is not None]
+            if with_emb:
+                return max(with_emb, key=lambda f: float(np.dot(f.embedding, norm_t)))
+        if target_point is not None:
+            return cls.select_by_point(faces, target_point)
+        if target_index is not None:
+            return cls.select_by_index(faces, target_index)
+        return cls.select_largest(faces)
+
     def update(self, faces: list[DetectedFace]) -> DetectedFace | None:
         """Retorna o rosto-alvo neste quadro, ou None se ele não aparece."""
         cfg = self.config

@@ -254,6 +254,18 @@ class MainWindow(QWidget):
         self.lbl_video_info = QLabel("Resolução: - | Duração: - | FPS: -")
         self.lbl_video_info.setStyleSheet("color: #64748b; font-size: 12px;")
         v_side.addWidget(self.lbl_video_info)
+
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Rosto-Alvo no Quadro:"))
+        self.combo_target_face = QComboBox()
+        self.combo_target_face.addItem("Automático (Maior Rosto)", None)
+        self.combo_target_face.addItem("1º Rosto (Esquerda → Direita)", 0)
+        self.combo_target_face.addItem("2º Rosto (Esquerda → Direita)", 1)
+        self.combo_target_face.addItem("3º Rosto (Esquerda → Direita)", 2)
+        target_row.addWidget(self.combo_target_face)
+        target_row.addStretch()
+        v_side.addLayout(target_row)
+
         v_side.addStretch()
 
         self.btn_select_video = QPushButton("📂 Selecionar Arquivo de Vídeo...")
@@ -481,6 +493,7 @@ class MainWindow(QWidget):
             color_correct=self.chk_color_correct.isChecked(),
             feather_amount=self.slider_feather.value(),
             enable_zombie=False,
+            target_face_index=self.combo_target_face.currentData(),
         )
         self.video_worker.moveToThread(self.video_thread)
 
@@ -566,6 +579,7 @@ class MainWindow(QWidget):
             color_correct=self.chk_color_correct.isChecked(),
             feather_amount=self.slider_feather.value(),
             enable_zombie=False,
+            target_face_index=self.combo_target_face.currentData(),
         )
         self.webcam_worker.moveToThread(self.webcam_thread)
 

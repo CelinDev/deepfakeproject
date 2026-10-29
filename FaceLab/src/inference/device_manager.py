@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 try:
     import torch  # type: ignore[import-not-found]
@@ -23,8 +24,8 @@ class _SimpleDevice:
 
     def __init__(self, spec: str) -> None:
         parts = spec.split(":", 1)
-        self.type = parts[0]
-        self.index = int(parts[1]) if len(parts) > 1 else None
+        self.type: str = parts[0]
+        self.index: int | None = int(parts[1]) if len(parts) > 1 else None
 
     def __repr__(self) -> str:
         return f"device(type='{self.type}'" + (f", index={self.index})" if self.index is not None else ")")
@@ -33,7 +34,7 @@ class _SimpleDevice:
         return getattr(other, "type", None) == self.type and getattr(other, "index", None) == self.index
 
 
-def _make_device(spec: str):
+def _make_device(spec: str) -> Any:
     if torch is not None:
         return torch.device(spec)
     return _SimpleDevice(spec)

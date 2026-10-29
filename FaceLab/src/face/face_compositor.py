@@ -17,8 +17,12 @@ from config.settings import (
     COLOR_STD_GAIN_MAX,
     COLOR_STD_GAIN_MIN,
     COMPOSITOR_BLEND_MODE,
+    COMPOSITOR_DEFAULT_BLUR,
+    COMPOSITOR_DEFAULT_ERODE,
+    DOWNSCALE_PREFILTER_RATIO_THRESH,
     ENABLE_BORDER_LOWFREQ_COLOR,
     LAPLACIAN_PYRAMID_LEVELS,
+    MICROTEXTURE_STRENGTH,
     WARP_BACK_INTERPOLATION,
     WARP_PREFILTER_SHRINK,
 )
@@ -34,8 +38,8 @@ class FaceCompositor:
 
     def __init__(
         self,
-        blur_amount: int = 15,
-        erode_amount: int = 5,
+        blur_amount: int = COMPOSITOR_DEFAULT_BLUR,
+        erode_amount: int = COMPOSITOR_DEFAULT_ERODE,
         mask_size: int = ALIGNED_MASK_SIZE,
         blend_mode: str = COMPOSITOR_BLEND_MODE,
         pyramid_levels: int = LAPLACIAN_PYRAMID_LEVELS,
@@ -71,7 +75,7 @@ class FaceCompositor:
         para evitar serrilhado e cintilação (shimmering) nos poros e bordas.
         """
         downsample_ratio = float(np.hypot(scaled_affine[0, 0], scaled_affine[0, 1]))
-        if downsample_ratio <= 1.15:
+        if downsample_ratio <= DOWNSCALE_PREFILTER_RATIO_THRESH:
             return fake_crop
         sigma = min(4.0, 0.45 * (downsample_ratio - 1.0))
         return cv2.GaussianBlur(fake_crop, (0, 0), sigmaX=sigma, sigmaY=sigma)
@@ -257,7 +261,11 @@ class FaceCompositor:
         return cv2.cvtColor(matched_lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
     @staticmethod
-    def inject_skin_microtexture(fake_crop: np.ndarray, original_crop: np.ndarray, strength: float = 0.22) -> np.ndarray:
+    def inject_skin_microtexture(
+        fake_crop: np.ndarray,
+        original_crop: np.ndarray,
+        strength: float = MICROTEXTURE_STRENGTH,
+    ) -> np.ndarray:
         """Transfere a microtextura de poros e iluminação fina do rosto real para o crop."""
         if original_crop.shape[:2] != fake_crop.shape[:2]:
             original_crop = cv2.resize(
@@ -391,7 +399,9 @@ class FaceCompositor:
                 skin_mask=effective_skin_mask,
                 enable_border_lowfreq=enable_border_lowfreq,
             )
-            fake_crop = self.inject_skin_microtexture(fake_crop, aligned_original_crop, strength=0.22)
+            fake_crop = self.inject_skin_microtexture(
+                fake_crop, aligned_original_crop, strength=MICROTEXTURE_STRENGTH
+            )
 
         # Fator de escala entre o fake_crop (ex: 512px do GFPGAN) e o aligned_original_crop (ex: 128px)
         scale_factor = float(crop_w) / float(orig_crop_w)

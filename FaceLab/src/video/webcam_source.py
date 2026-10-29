@@ -12,6 +12,13 @@ from collections.abc import Iterator
 import cv2
 import numpy as np
 
+from config.settings import (
+    WEBCAM_BUFFER_SIZE,
+    WEBCAM_DEFAULT_FPS,
+    WEBCAM_DEFAULT_HEIGHT,
+    WEBCAM_DEFAULT_WIDTH,
+    WEBCAM_PREFER_MJPG,
+)
 from src.core.interfaces import FrameSource
 from src.core.types import Frame
 
@@ -22,10 +29,10 @@ class WebcamSource(FrameSource):
     def __init__(
         self,
         camera_index: int = 0,
-        width: int = 1280,
-        height: int = 720,
-        target_fps: int = 30,
-        prefer_mjpg: bool = True,
+        width: int = WEBCAM_DEFAULT_WIDTH,
+        height: int = WEBCAM_DEFAULT_HEIGHT,
+        target_fps: int = WEBCAM_DEFAULT_FPS,
+        prefer_mjpg: bool = WEBCAM_PREFER_MJPG,
     ) -> None:
         self.camera_index = camera_index
         self.width = width
@@ -61,7 +68,7 @@ class WebcamSource(FrameSource):
                 "Verifique se o DroidCam Client está conectado (Start) no PC."
             )
 
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, WEBCAM_BUFFER_SIZE)
         if self.prefer_mjpg:
             mjpg_fourcc = cv2.VideoWriter_fourcc(*"MJPG")
             self._cap.set(cv2.CAP_PROP_FOURCC, mjpg_fourcc)

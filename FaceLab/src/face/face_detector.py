@@ -14,7 +14,13 @@ import logging
 
 import numpy as np
 
-from config.settings import MODELS_DIR, USE_LANDMARK_106
+from config.settings import (
+    DEFAULT_DET_SIZE,
+    DEFAULT_DET_THRESH,
+    FALLBACK_DET_SIZE,
+    MODELS_DIR,
+    USE_LANDMARK_106,
+)
 from src.core.interfaces import FaceDetector
 from src.core.types import DetectedFace
 from src.inference.device_manager import DeviceManager
@@ -30,8 +36,8 @@ class InsightFaceDetector(FaceDetector):
         self,
         device_manager: DeviceManager,
         model_name: str = "buffalo_l",
-        det_size: tuple[int, int] = (1024, 1024),
-        det_thresh: float = 0.35,
+        det_size: tuple[int, int] = DEFAULT_DET_SIZE,
+        det_thresh: float = DEFAULT_DET_THRESH,
         with_embedding: bool = True,
         with_landmark_106: bool = USE_LANDMARK_106,
     ) -> None:
@@ -71,7 +77,7 @@ class InsightFaceDetector(FaceDetector):
             self._app.det_model.prepare(
                 ctx_id=0,
                 input_size=tuple(det_size),
-                det_thresh=getattr(self._app.det_model, "det_thresh", 0.35),
+                det_thresh=getattr(self._app.det_model, "det_thresh", DEFAULT_DET_THRESH),
             )
         if hasattr(self._app, "det_size"):
             self._app.det_size = tuple(det_size)
@@ -79,23 +85,23 @@ class InsightFaceDetector(FaceDetector):
     def _current_det_size(self) -> tuple[int, int]:
         if hasattr(self._app, "det_model") and hasattr(self._app.det_model, "input_size"):
             return tuple(self._app.det_model.input_size)
-        return getattr(self._app, "det_size", (640, 640))
+        return getattr(self._app, "det_size", FALLBACK_DET_SIZE)
 
     def detect(self, image: np.ndarray, compute_embeddings: bool = True) -> list[DetectedFace]:
         cur_size = self._current_det_size()
         if compute_embeddings or "recognition" not in self._app.models:
             faces = self._app.get(image)
             # Fallback multi-escala (se o rosto ocupar a foto inteira / close-up e passar do stride máximo de 1024x1024)
-            if not faces and cur_size != (640, 640):
-                self.set_detection_size((640, 640))
+            if not faces and cur_size != FALLBACK_DET_SIZE:
+                self.set_detection_size(FALLBACK_DET_SIZE)
                 faces = self._app.get(image)
                 self.set_detection_size(cur_size)
         else:
             # OTIMIZAÇÃO (Fase 6): executa somente detecção de caixas e 5 marcos faciais (SCRFD),
             # sem rodar a rede neural profunda ArcFace (que só é necessária quando rastreamos por identidade).
             bboxes, kpss = self._app.det_model.detect(image, max_num=0, metric="default")
-            if bboxes.shape[0] == 0 and cur_size != (640, 640):
-                self.set_detection_size((640, 640))
+            if bboxes.shape[0] == 0 and cur_size != FALLBACK_DET_SIZE:
+                self.set_detection_size(FALLBACK_DET_SIZE)
                 bboxes, kpss = self._app.det_model.detect(image, max_num=0, metric="default")
                 self.set_detection_size(cur_size)
             faces = []

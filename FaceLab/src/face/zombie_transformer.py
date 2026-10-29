@@ -58,7 +58,6 @@ class ZombieTransformer:
 
         h, w = frame.shape[:2]
         eye_l, eye_r = landmarks[0], landmarks[1]
-        nose = landmarks[2]
         mouth_l, mouth_r = landmarks[3], landmarks[4]
 
         face_center = ((eye_l + eye_r + mouth_l + mouth_r) / 4.0).astype(int)
@@ -84,7 +83,6 @@ class ZombieTransformer:
         rel_center = (face_center[0] - x1, face_center[1] - y1)
         rel_el = (int(eye_l[0] - x1), int(eye_l[1] - y1))
         rel_er = (int(eye_r[0] - x1), int(eye_r[1] - y1))
-        rel_nose = (int(nose[0] - x1), int(nose[1] - y1))
         rel_ml = (int(mouth_l[0] - x1), int(mouth_l[1] - y1))
         rel_mr = (int(mouth_r[0] - x1), int(mouth_r[1] - y1))
 

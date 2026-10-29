@@ -45,10 +45,10 @@ Construído do zero com foco em estabilização temporal anti-flicker, aceleraç
 
 Siga o passo a passo intuitivo abaixo para configurar o ambiente em qualquer computador:
 
-### 1. Clonar o Repositório
+### 1. Clonar o Repositório e Acessar a Pasta do Projeto
 ```powershell
-git clone https://github.com/SEU_USUARIO/FaceLab.git
-cd FaceLab
+git clone https://github.com/CelinDev/deepfakeproject.git
+cd deepfakeproject\FaceLab
 ```
 
 ### 2. Criar e Ativar o Ambiente Virtual (Python 3.11 recomendado)

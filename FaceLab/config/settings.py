@@ -71,6 +71,34 @@ ORT_ENABLE_IO_BINDING: bool = True           # Usa IOBinding no ONNX Runtime qua
 VIDEO_QUEUE_SIZE: int = 16                   # Capacidade máxima das filas produtor/consumidor no processamento offline
 VIDEO_TWO_PASS_SMOOTH_WINDOW: int = 5        # Meia-janela (±N quadros, total 2N+1) para suavização não causal em dois passes
 
+# Parâmetros gerais de detecção, alinhamento, composição, tracker, webcam e vídeo (extraídos de números mágicos)
+DEFAULT_DET_SIZE: tuple[int, int] = (1024, 1024)       # Resolução padrão da grade de detecção SCRFD
+FALLBACK_DET_SIZE: tuple[int, int] = (640, 640)        # Resolução de fallback multi-escala para rostos em close-up
+DEFAULT_DET_THRESH: float = 0.35                       # Limiar padrão de confiança do detector SCRFD em vídeo/webcam
+SOURCE_FACE_DET_THRESH: float = 0.50                   # Limiar inicial para detectar o rosto na foto de referência
+SOURCE_FACE_LOW_DET_THRESH: float = 0.20               # Limiar reduzido de fallback para fotos com maquiagem/prótese
+SWAPPER_WORK_SIZE: int = 512                           # Resolução interna de alinhamento/super-amostragem e saída do GFPGAN
+ENHANCER_DEFAULT_BLEND_RATIO: float = 0.80             # Mistura padrão do GFPGAN (80% restaurado, 20% original)
+COMPOSITOR_DEFAULT_BLUR: int = 15                      # Feathering padrão (px na escala base) da borda da máscara
+COMPOSITOR_DEFAULT_ERODE: int = 5                      # Erosão morfológica padrão (px na escala base) da máscara
+MICROTEXTURE_STRENGTH: float = 0.22                    # Intensidade da injeção de microtextura de poros da pele real
+DOWNSCALE_PREFILTER_RATIO_THRESH: float = 1.15         # Razão crop/frame acima da qual o pré-filtro anti-aliasing é ativado
+TRACKER_IDENTITY_THRESHOLD: float = 0.18               # Similaridade mínima de cosseno para validar a mesma pessoa
+TRACKER_IDENTITY_WEIGHT: float = 0.55                  # Peso da identidade (ArcFace) na pontuação do tracker
+TRACKER_IOU_WEIGHT: float = 0.45                       # Peso da sobreposição espacial (IoU) na pontuação do tracker
+TRACKER_MAX_MISSING_FRAMES: int = 30                   # Quadros máximos mantendo memória espacial da última bbox
+TRACKER_GRACE_FRAMES: int = 6                          # Quadros de tolerância em oclusões rápidas
+LIVE_EMBEDDING_INTERVAL: int = 12                      # Intervalo de quadros para recalcular embedding ArcFace na webcam
+VIDEO_EMBEDDING_INTERVAL: int = 5                      # Intervalo de quadros para recalcular embedding ArcFace no vídeo offline
+LIVE_PARSER_INTERVAL: int = 2                          # Intervalo de quadros para rodar BiSeNet na webcam ao vivo
+WEBCAM_DEFAULT_WIDTH: int = 1280                       # Largura padrão de captura da webcam
+WEBCAM_DEFAULT_HEIGHT: int = 720                       # Altura padrão de captura da webcam
+WEBCAM_DEFAULT_FPS: int = 30                           # Taxa de quadros alvo padrão da webcam
+WEBCAM_BUFFER_SIZE: int = 1                            # Tamanho do buffer interno do OpenCV para mínima latência
+WEBCAM_PREFER_MJPG: bool = True                        # Solicita codec MJPG na webcam para maior taxa de quadros
+VIDEO_DEFAULT_CRF: int = 18                            # Qualidade constante H.264 padrão no FFmpeg (menor = maior qualidade)
+VIDEO_DEFAULT_PRESET: str = "medium"                   # Preset de codificação x264 no FFmpeg
+
 
 def find_executable(name: str) -> Path | None:
     """Localiza um executável (ex.: 'ffmpeg', 'ffprobe').

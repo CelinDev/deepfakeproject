@@ -13,9 +13,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtGui import QCloseEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -34,8 +33,10 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import (
+    COMPOSITOR_DEFAULT_BLUR,
     CYBORG_REFERENCE_IMAGE,
     OUTPUT_DIR,
+    SOURCE_FACE_LOW_DET_THRESH,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
     VAMPIRE_REFERENCE_IMAGE,
@@ -186,12 +187,12 @@ class MainWindow(QWidget):
         # Slider: Suavização de Bordas / Feathering (3 a 45px)
         vbox_feather = QVBoxLayout()
         vbox_feather.setSpacing(4)
-        self.lbl_feather = QLabel("Suavização Anatômica: <b>15 px</b>")
+        self.lbl_feather = QLabel(f"Suavização Anatômica: <b>{COMPOSITOR_DEFAULT_BLUR} px</b>")
         self.lbl_feather.setStyleSheet("color: #38bdf8;")
         self.slider_feather = QSlider(Qt.Orientation.Horizontal)
         self.slider_feather.setRange(3, 45)
         self.slider_feather.setSingleStep(2)
-        self.slider_feather.setValue(15)
+        self.slider_feather.setValue(COMPOSITOR_DEFAULT_BLUR)
         self.slider_feather.valueChanged.connect(self._on_feather_changed)
         vbox_feather.addWidget(self.lbl_feather)
         vbox_feather.addWidget(self.slider_feather)
@@ -406,7 +407,9 @@ class MainWindow(QWidget):
                     self.webcam_worker.image_path = self.image_path
                     if self.webcam_worker.pipeline:
                         try:
-                            self.webcam_worker.pipeline.load_source_face(self.image_path, det_thresh=0.2)
+                            self.webcam_worker.pipeline.load_source_face(
+                                self.image_path, det_thresh=SOURCE_FACE_LOW_DET_THRESH
+                            )
                         except Exception as e:
                             logger.warning("Erro ao recarregar face do preset: %s", e)
         else:
@@ -634,7 +637,7 @@ class MainWindow(QWidget):
         self.webcam_display.setText("Stream de vídeo finalizado.")
         self.lbl_webcam_fps.setText("LIVE FPS: 0.0")
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Garante encerramento gracioso ao fechar o app."""
         if self.webcam_worker:
             self.webcam_worker.stop()

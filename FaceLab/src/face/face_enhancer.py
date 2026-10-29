@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config.settings import MODELS_DIR
+from config.settings import ENHANCER_DEFAULT_BLEND_RATIO, MODELS_DIR, SWAPPER_WORK_SIZE
 from src.inference.device_manager import DeviceManager
 from src.inference.model_loader import onnx_providers
 
@@ -29,7 +29,7 @@ class FaceEnhancer:
         self,
         device_manager: DeviceManager,
         model_path: str | Path | None = None,
-        blend_ratio: float = 0.8,
+        blend_ratio: float = ENHANCER_DEFAULT_BLEND_RATIO,
     ) -> None:
         """
         Args:
@@ -55,7 +55,7 @@ class FaceEnhancer:
 
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
-        self.input_size = (512, 512)
+        self.input_size: tuple[int, int] = (SWAPPER_WORK_SIZE, SWAPPER_WORK_SIZE)
         self._frame_count: int = 0
         self._cached_delta_512: np.ndarray | None = None
 

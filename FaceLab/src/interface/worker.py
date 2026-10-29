@@ -11,13 +11,19 @@ import logging
 import threading
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 
+from config.settings import COMPOSITOR_DEFAULT_BLUR
 from src.core.types import PipelineCancelled
 from src.inference.device_manager import DevicePreference
 from src.pipeline.video_pipeline import PipelineProgress, VideoPipeline
+
+if TYPE_CHECKING:
+    from src.pipeline.live_pipeline import LivePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +57,7 @@ class VideoWorker(QObject):
         enable_enhancer: bool = False,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
-        feather_amount: int = 15,
+        feather_amount: int = COMPOSITOR_DEFAULT_BLUR,
         enable_zombie: bool = False,
         target_face_index: int | None = None,
     ) -> None:

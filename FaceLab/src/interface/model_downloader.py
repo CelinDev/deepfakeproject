@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from config.settings import BISENET_MODEL_PATH, MODELS_DIR
@@ -155,7 +157,7 @@ class _ModelDownloadWorker(QObject):
 class ModelDownloadDialog(QDialog):
     """Janela modal exibida na inicialização quando faltam modelos obrigatórios."""
 
-    def __init__(self, missing: list[ModelSpec], parent=None) -> None:
+    def __init__(self, missing: list[ModelSpec], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.missing = missing
         self.setWindowTitle("⚡ FaceLab Studio — Download Obrigatório de Modelos")
@@ -260,13 +262,13 @@ class ModelDownloadDialog(QDialog):
             self._thread.wait(3000)
         self.reject()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         if not self._completed:
             self._on_cancel()
         super().closeEvent(event)
 
 
-def ensure_models_installed(parent=None) -> bool:
+def ensure_models_installed(parent: QWidget | None = None) -> bool:
     """Verifica se todos os modelos existem; se não, abre o diálogo obrigatório.
 
     Retorna True se todos os modelos estão prontos, ou False se o usuário recusou/fechou.

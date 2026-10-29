@@ -53,8 +53,8 @@ Antes de configurar o código, certifique-se de que os seguintes softwares estã
 ### Passo 1: Obter o Código
 Abra seu terminal favorito (PowerShell no Windows, ou Bash no Linux/macOS):
 ```bash
-git clone https://github.com/SEU_USUARIO/FaceLab.git
-cd FaceLab
+git clone https://github.com/CelinDev/deepfakeproject.git
+cd deepfakeproject/FaceLab
 ```
 
 ### Passo 2: Criar e Ativar o Ambiente Virtual Isolado

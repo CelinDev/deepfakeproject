@@ -25,8 +25,13 @@ import cv2
 import numpy as np
 
 from config.settings import (
+    COMPOSITOR_DEFAULT_BLUR,
+    DEFAULT_DET_THRESH,
     OUTPUT_DIR,
+    SOURCE_FACE_DET_THRESH,
+    SOURCE_FACE_LOW_DET_THRESH,
     USE_LEGACY_BBOX_RESTORE,
+    VIDEO_EMBEDDING_INTERVAL,
     VIDEO_QUEUE_SIZE,
     VIDEO_TWO_PASS_SMOOTH_WINDOW,
     ZOMBIE_REFERENCE_IMAGE,
@@ -70,7 +75,7 @@ class VideoPipeline:
         enable_enhancer: bool = False,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
-        feather_amount: int = 15,
+        feather_amount: int = COMPOSITOR_DEFAULT_BLUR,
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
         use_legacy_bbox_restore: bool = USE_LEGACY_BBOX_RESTORE,
@@ -100,25 +105,29 @@ class VideoPipeline:
         """Sinaliza para interromper o pipeline com segurança."""
         self._is_cancelled = True
 
-    def extract_source_face(self, image_path: str | Path, det_thresh: float = 0.5) -> DetectedFace:
+    def extract_source_face(
+        self,
+        image_path: str | Path,
+        det_thresh: float = SOURCE_FACE_DET_THRESH,
+    ) -> DetectedFace:
         """Detecta e retorna o rosto principal da imagem de referência."""
         path = validate_image_path(image_path)
         img = cv2.imread(str(path))
         if img is None:
             raise ValueError(f"Não foi possível abrir a imagem: {path}")
 
-        if det_thresh != 0.5:
+        if det_thresh != SOURCE_FACE_DET_THRESH:
             self.detector.set_detection_threshold(det_thresh)
 
         faces = self.detector.detect(img)
 
         # Se não achou na primeira tentativa, tenta com limiar baixo automático (ex: próteses pesadas / zumbi)
-        if not faces and det_thresh >= 0.5:
-            self.detector.set_detection_threshold(0.2)
+        if not faces and det_thresh >= SOURCE_FACE_DET_THRESH:
+            self.detector.set_detection_threshold(SOURCE_FACE_LOW_DET_THRESH)
             faces = self.detector.detect(img)
 
         # Restaura o limiar padrão flexível para o processamento de quadros do vídeo
-        self.detector.set_detection_threshold(0.35)
+        self.detector.set_detection_threshold(DEFAULT_DET_THRESH)
 
         if not faces:
             raise ValueError(f"Nenhum rosto foi detectado na imagem de referência: {path.name}")
@@ -149,7 +158,7 @@ class VideoPipeline:
             for frame in pass1_source.frames():
                 if self._is_cancelled:
                     raise PipelineCancelled("Processamento cancelado pelo usuário.")
-                need_emb = (tracker is None) or (idx % 5 == 0) or (tracker.missing > 0)
+                need_emb = (tracker is None) or (idx % VIDEO_EMBEDDING_INTERVAL == 0) or (tracker.missing > 0)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_emb)
                 if tracker is None and faces:
                     primeiro_alvo = TargetFaceTracker.select_target(
@@ -195,7 +204,7 @@ class VideoPipeline:
             if ZOMBIE_REFERENCE_IMAGE.is_file():
                 ref_path = ZOMBIE_REFERENCE_IMAGE
                 logger.info("Carregando identidade zumbi hiper-realista de referência: %s", ref_path)
-                source_face = self.extract_source_face(ref_path, det_thresh=0.2)
+                source_face = self.extract_source_face(ref_path, det_thresh=SOURCE_FACE_LOW_DET_THRESH)
         elif source_image_path is not None:
             ref_path = validate_image_path(source_image_path)
             logger.info("Extraindo rosto de referência...")
@@ -313,7 +322,7 @@ class VideoPipeline:
                         else:
                             target, fade_factor = smoother.hold_or_reset()
                     else:
-                        need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)
+                        need_embedding = (tracker is None) or (processed_count % VIDEO_EMBEDDING_INTERVAL == 0) or (tracker.missing > 0)
                         faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
                         faces_count = len(faces)
 

@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config.settings import ALIGNED_MASK_SIZE, BISENET_MODEL_PATH, MASK_EMA_ALPHA
+from config.settings import ALIGNED_MASK_SIZE, BISENET_MODEL_PATH
 from src.core.types import DetectedFace
 from src.inference.device_manager import DeviceManager
 from src.inference.model_loader import onnx_providers
@@ -26,7 +26,7 @@ from src.inference.model_loader import onnx_providers
 logger = logging.getLogger(__name__)
 
 # Mapeamento das 19 classes CelebAMask-HQ
-FACE_PARSER_CLASSES = {
+FACE_PARSER_CLASSES: dict[int, str] = {
     0: "background",
     1: "skin",
     2: "l_brow",

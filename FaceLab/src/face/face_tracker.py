@@ -22,6 +22,11 @@ from config.settings import (
     OPTICAL_FLOW_MIN_CONFIDENCE,
     TRACKER_EMBEDDING_EMA_ALPHA,
     TRACKER_EMBEDDING_UPDATE_SIM,
+    TRACKER_GRACE_FRAMES,
+    TRACKER_IDENTITY_THRESHOLD,
+    TRACKER_IDENTITY_WEIGHT,
+    TRACKER_IOU_WEIGHT,
+    TRACKER_MAX_MISSING_FRAMES,
     TRACKER_VELOCITY_TOLERANCE_FRAMES,
 )
 from src.core.types import DetectedFace
@@ -38,11 +43,11 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 @dataclass
 class TrackerConfig:
-    identity_threshold: float = 0.18  # mais flexível para rotações, expressões fortes e mudanças de luz
-    identity_weight: float = 0.55
-    iou_weight: float = 0.45
-    max_missing_frames: int = 30  # mantém a memória espacial por até ~1 segundo
-    grace_frames: int = 6         # segura o último alvo válido em movimentos bruscos/oclusões curtas
+    identity_threshold: float = TRACKER_IDENTITY_THRESHOLD  # mais flexível para rotações, expressões fortes e mudanças de luz
+    identity_weight: float = TRACKER_IDENTITY_WEIGHT
+    iou_weight: float = TRACKER_IOU_WEIGHT
+    max_missing_frames: int = TRACKER_MAX_MISSING_FRAMES  # mantém a memória espacial por até ~1 segundo
+    grace_frames: int = TRACKER_GRACE_FRAMES              # segura o último alvo válido em movimentos bruscos/oclusões curtas
     velocity_tolerance_frames: int = TRACKER_VELOCITY_TOLERANCE_FRAMES
     embedding_ema_alpha: float = TRACKER_EMBEDDING_EMA_ALPHA
     embedding_update_similarity: float = TRACKER_EMBEDDING_UPDATE_SIM

@@ -13,14 +13,15 @@ from __future__ import annotations
 import subprocess
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import cv2
 
-from config.settings import TEMP_DIR, find_executable
+from config.settings import TEMP_DIR, VIDEO_DEFAULT_CRF, VIDEO_DEFAULT_PRESET, find_executable
 from src.core.interfaces import FrameSink
 from src.core.types import Frame
 
-AI_DISCLOSURE = (
+AI_DISCLOSURE: str = (
     "Conteudo sintetico: video alterado por IA (face swap) com o FaceLab, "
     "software educacional."
 )
@@ -40,7 +41,8 @@ class VideoFileSink(FrameSink):
         height: int,
         fps: Fraction,
         audio_source: str | Path | None = None,
-        crf: int = 18,
+        crf: int = VIDEO_DEFAULT_CRF,
+        preset: str = VIDEO_DEFAULT_PRESET,
         disclosure: str = AI_DISCLOSURE,
     ) -> None:
         self.output_path = Path(output_path)
@@ -48,10 +50,11 @@ class VideoFileSink(FrameSink):
         self.fps = fps
         self.audio_source = Path(audio_source) if audio_source else None
         self.crf = crf
+        self.preset = str(preset)
         self.disclosure = disclosure
         self.frames_written = 0
         self._proc: subprocess.Popen[bytes] | None = None
-        self._log_file = None
+        self._log_file: Any | None = None
         self.log_path = TEMP_DIR / f"ffmpeg_{self.output_path.stem}.log"
 
     def _build_command(self) -> list[str]:
@@ -72,7 +75,7 @@ class VideoFileSink(FrameSink):
         if self.audio_source:
             cmd += ["-map", "1:a:0?", "-c:a", "copy"]  # '?' = opcional se não houver áudio
         cmd += [
-            "-c:v", "libx264", "-crf", str(self.crf), "-preset", "medium",
+            "-c:v", "libx264", "-crf", str(self.crf), "-preset", self.preset,
             "-pix_fmt", "yuv420p",  # compatível com a maioria dos players
             "-metadata", f"comment={self.disclosure}",
             "-metadata", f"description={self.disclosure}",

@@ -110,3 +110,4 @@ class XSegOccluder(FaceOccluder):
         if mask.shape[:2] != (out_size, out_size):
             mask = cv2.resize(mask, (out_size, out_size), interpolation=cv2.INTER_LINEAR)
         return mask.astype(np.float32)
+

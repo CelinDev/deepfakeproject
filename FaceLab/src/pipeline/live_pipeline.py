@@ -18,19 +18,28 @@ import cv2
 import numpy as np
 
 from config.settings import (
+    COMPOSITOR_DEFAULT_BLUR,
+    DEFAULT_DET_SIZE,
+    DEFAULT_DET_THRESH,
     LIVE_DETECT_INTERVAL,
+    LIVE_EMBEDDING_INTERVAL,
     LIVE_ENHANCER_INTERVAL,
+    LIVE_PARSER_INTERVAL,
+    SOURCE_FACE_DET_THRESH,
+    SOURCE_FACE_LOW_DET_THRESH,
     USE_LEGACY_BBOX_RESTORE,
+    WEBCAM_DEFAULT_HEIGHT,
+    WEBCAM_DEFAULT_WIDTH,
     ZOMBIE_REFERENCE_IMAGE,
 )
 from src.core.interfaces import FrameSource
-from src.core.types import DetectedFace, Frame
+from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
 from src.face.face_enhancer import FaceEnhancer
 from src.face.face_occluder import XSegOccluder
-from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
+from src.face.face_parser import FaceParser
 from src.face.face_swapper import INSwapperModel
 from src.face.face_tracker import OpticalFlowPropagator, TargetFaceTracker
 from src.face.temporal_smoother import TemporalSmoother
@@ -51,7 +60,7 @@ class LivePipeline:
         on_frame_rendered: Callable[[np.ndarray, float], None] | None = None,
         blend_intensity: float = 1.0,
         color_correct: bool = True,
-        feather_amount: int = 15,
+        feather_amount: int = COMPOSITOR_DEFAULT_BLUR,
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
         enable_enhancer: bool = True,
@@ -72,7 +81,7 @@ class LivePipeline:
         """
         self.device_manager = DeviceManager(device_preference)
         # Modo de alta precisão 1024x1024 para tracking sub-pixel na webcam
-        self.detector = InsightFaceDetector(self.device_manager, det_size=(1024, 1024))
+        self.detector = InsightFaceDetector(self.device_manager, det_size=DEFAULT_DET_SIZE)
         compositor = FaceCompositor(blur_amount=feather_amount)
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.parser = FaceParser(self.device_manager) if enable_head_swap else None
@@ -113,25 +122,29 @@ class LivePipeline:
         if enable_zombie is not None:
             self.enable_zombie = bool(enable_zombie)
 
-    def load_source_face(self, source_image_path: str | Path, det_thresh: float = 0.5) -> DetectedFace:
+    def load_source_face(
+        self,
+        source_image_path: str | Path,
+        det_thresh: float = SOURCE_FACE_DET_THRESH,
+    ) -> DetectedFace:
         """Extrai o embedding e marcos do rosto novo de referência."""
         path = validate_image_path(source_image_path)
         img = cv2.imread(str(path))
         if img is None:
             raise ValueError(f"Não foi possível abrir a imagem: {path}")
 
-        if det_thresh != 0.5:
+        if det_thresh != SOURCE_FACE_DET_THRESH:
             self.detector.set_detection_threshold(det_thresh)
 
         faces = self.detector.detect(img)
 
         # Se não achou na primeira tentativa, tenta com limiar baixo automático (ex: próteses pesadas / zumbi)
-        if not faces and det_thresh >= 0.5:
-            self.detector.set_detection_threshold(0.2)
+        if not faces and det_thresh >= SOURCE_FACE_DET_THRESH:
+            self.detector.set_detection_threshold(SOURCE_FACE_LOW_DET_THRESH)
             faces = self.detector.detect(img)
 
         # Restaura o limiar padrão flexível para o processamento de quadros da webcam
-        self.detector.set_detection_threshold(0.35)
+        self.detector.set_detection_threshold(DEFAULT_DET_THRESH)
 
         if not faces:
             raise ValueError(f"Nenhum rosto foi detectado na imagem de referência: {path.name}")
@@ -147,8 +160,8 @@ class LivePipeline:
         source_image_path: str | Path | None = None,
         camera_source: FrameSource | None = None,
         camera_index: int = 0,
-        width: int = 1280,
-        height: int = 720,
+        width: int = WEBCAM_DEFAULT_WIDTH,
+        height: int = WEBCAM_DEFAULT_HEIGHT,
         target_embedding: np.ndarray | None = None,
         target_face_index: int | None = None,
         target_point: tuple[float, float] | None = None,
@@ -161,7 +174,7 @@ class LivePipeline:
             if ZOMBIE_REFERENCE_IMAGE.is_file():
                 ref_path = ZOMBIE_REFERENCE_IMAGE
                 logger.info("Carregando identidade zumbi hiper-realista para a webcam: %s", ref_path)
-                source_face = self.load_source_face(ref_path, det_thresh=0.2)
+                source_face = self.load_source_face(ref_path, det_thresh=SOURCE_FACE_LOW_DET_THRESH)
         elif source_image_path is not None:
             ref_path = validate_image_path(source_image_path)
             source_face = self.load_source_face(ref_path)
@@ -184,7 +197,6 @@ class LivePipeline:
 
         frame_count = 0
         fps = 0.0
-        t_last = time.perf_counter()
 
         logger.info("Iniciando LivePipeline (Webcam)...")
         with source:
@@ -193,8 +205,12 @@ class LivePipeline:
                     break
 
                 t0 = time.perf_counter()
-                # Em tempo real, busca embedding apenas a cada 12 quadros para maximizar FPS
-                need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker.missing > 2)
+                # Em tempo real, busca embedding apenas a cada LIVE_EMBEDDING_INTERVAL quadros para maximizar FPS
+                need_embedding = (
+                    (tracker is None)
+                    or (frame_count % LIVE_EMBEDDING_INTERVAL == 0)
+                    or (tracker.missing > 2)
+                )
                 should_detect = (
                     need_embedding
                     or (self.detect_interval <= 1)
@@ -205,7 +221,7 @@ class LivePipeline:
                 target: DetectedFace | None = None
                 if not should_detect:
                     # Propaga landmarks/bbox via fluxo óptico de Lucas-Kanade; redetecta se a confiança cair
-                    propagated, conf = self.flow_propagator.propagate(frame.image, last_valid_target)
+                    propagated, _ = self.flow_propagator.propagate(frame.image, last_valid_target)
                     if propagated is not None:
                         target = tracker.update([propagated]) if tracker else propagated
                     else:
@@ -256,7 +272,7 @@ class LivePipeline:
                             source_crop=source_crop,
                             enhancer_interval=self.enhancer_interval,
                             parser=None if self.use_legacy_bbox_restore else self.parser,
-                            parser_interval=2,
+                            parser_interval=LIVE_PARSER_INTERVAL,
                             occluder=self.occluder,
                         )
 
@@ -267,7 +283,7 @@ class LivePipeline:
                                 original_frame=frame.image,
                                 target_face=target,
                                 feather=5,
-                                reuse_interval=2,
+                                reuse_interval=LIVE_PARSER_INTERVAL,
                             )
                     else:
                         out_frame = frame.image.copy()

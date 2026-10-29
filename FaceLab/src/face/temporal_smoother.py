@@ -23,6 +23,7 @@ from config.settings import (
     SCENE_CUT_FACE_RATIO,
     SMOOTHER_ALPHA_COLOR,
     TARGET_HOLD_FRAMES,
+    VIDEO_TWO_PASS_SMOOTH_WINDOW,
 )
 from src.core.types import DetectedFace
 
@@ -272,7 +273,7 @@ class TemporalSmoother:
     @staticmethod
     def smooth_sequence_non_causal(
         faces_seq: list[DetectedFace | None],
-        half_window: int = 5,
+        half_window: int = VIDEO_TWO_PASS_SMOOTH_WINDOW,
         scene_cut_ratio: float = SCENE_CUT_FACE_RATIO,
     ) -> list[DetectedFace | None]:
         """Suavização não causal (zero-phase) com janela gaussiana centrada de ``±half_window`` quadros.

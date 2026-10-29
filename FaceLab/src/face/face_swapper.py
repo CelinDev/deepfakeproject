@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -30,6 +31,7 @@ from config.settings import (
     MODELS_DIR,
     SMOOTH_TRANSFORM_PARAMS,
     SWAPPER_MODEL_NAME,
+    SWAPPER_WORK_SIZE,
 )
 from src.core.interfaces import FaceOccluder, FaceSwapper
 from src.core.types import DetectedFace
@@ -124,7 +126,7 @@ class INSwapperModel(FaceSwapper):
         self.target_input_name, self.source_input_name = self._identify_inputs(inputs)
         self.output_name = self.session.get_outputs()[0].name
         self.input_size = self.spec.input_size
-        self.work_size = 512  # Super-amostragem de alinhamento e composição (512x512)
+        self.work_size: int = SWAPPER_WORK_SIZE  # Super-amostragem de alinhamento e composição (512x512)
         self._latent_cache_key: bytes | None = None
         self._latent_cache_val: np.ndarray | None = None
 
@@ -158,7 +160,7 @@ class INSwapperModel(FaceSwapper):
         return fallback_spec, fallback_path
 
     @staticmethod
-    def _identify_inputs(inputs: list) -> tuple[str, str]:
+    def _identify_inputs(inputs: list[Any]) -> tuple[str, str]:
         """Identifica qual tensor de entrada é o crop de imagem (4D) e qual é o embedding (2D)."""
         if len(inputs) < 2:
             name = inputs[0].name if inputs else "target"

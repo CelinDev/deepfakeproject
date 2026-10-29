@@ -69,7 +69,7 @@ class LivePipeline:
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.parser = FaceParser(self.device_manager) if enable_head_swap else None
         self.enhancer = FaceEnhancer(self.device_manager) if enable_enhancer else None
-        self.smoother = TemporalSmoother(alpha_landmarks=0.65, alpha_color=0.8)
+        self.smoother = TemporalSmoother()
         self.blend_intensity = blend_intensity
         self.color_correct = color_correct
         self.enable_zombie = enable_zombie
@@ -189,7 +189,9 @@ class LivePipeline:
                 target = tracker.update(faces) if tracker else None
 
                 if target is not None and target.landmarks is not None:
-                    smoothed_lmk = self.smoother.smooth_landmarks(target.landmarks)
+                    smoothed_lmk = self.smoother.smooth_landmarks(
+                        target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
+                    )
                     target.landmarks = smoothed_lmk
 
                     if source_face is not None:

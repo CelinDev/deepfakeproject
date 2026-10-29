@@ -99,8 +99,8 @@ class VideoPipeline:
             self.detector.set_detection_threshold(0.2)
             faces = self.detector.detect(img)
 
-        # Restaura o limiar padrão para o processamento de quadros do vídeo
-        self.detector.set_detection_threshold(0.5)
+        # Restaura o limiar padrão flexível para o processamento de quadros do vídeo
+        self.detector.set_detection_threshold(0.35)
 
         if not faces:
             raise ValueError(f"Nenhum rosto foi detectado na imagem de referência: {path.name}")
@@ -159,7 +159,7 @@ class VideoPipeline:
         )
 
         tracker: TargetFaceTracker | None = None
-        smoother = TemporalSmoother(alpha_landmarks=0.65, alpha_color=0.8)
+        smoother = TemporalSmoother()
         start_time = time.perf_counter()
         processed_count = 0
 
@@ -186,8 +186,10 @@ class VideoPipeline:
 
                 # Se o alvo foi localizado no quadro atual, processa
                 if target is not None and target.landmarks is not None:
-                    # REFINAMENTO TEMPORAL: suaviza os 5 pontos faciais para eliminar micro-tremores (jitter)
-                    smoothed_lmk = smoother.smooth_landmarks(target.landmarks)
+                    # REFINAMENTO TEMPORAL: suaviza os 5 pontos faciais via One Euro Filter com timestamp do frame
+                    smoothed_lmk = smoother.smooth_landmarks(
+                        target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
+                    )
                     target.landmarks = smoothed_lmk
 
                     if source_face is not None:

@@ -23,7 +23,7 @@ import onnx
 from onnx import numpy_helper
 import onnxruntime as ort
 
-from config.settings import ALIGNED_MASK_SIZE, MODELS_DIR
+from config.settings import ALIGNED_MASK_SIZE, MODELS_DIR, SMOOTH_TRANSFORM_PARAMS
 from src.core.interfaces import FaceOccluder, FaceSwapper
 from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
@@ -97,9 +97,23 @@ class INSwapperModel(FaceSwapper):
         if source_face.embedding is None:
             raise ValueError("O rosto de origem (source_face) precisa conter um embedding facial válido.")
 
-        # 1. Alinha o rosto de destino em alta definição (512x512) para preservar poros, dentes e nitidez
+        # 1. Alinha o rosto de destino em alta definição (512x512) para preservar poros, dentes e nitidez.
+        # Se landmarks_106 estiver disponível, usa os centroides do contorno de 106 pontos e suaviza os
+        # parâmetros da transformação de similaridade (escala, rotação, translação).
+        raw_affine_hi = FaceAligner.estimate_affine_matrix(
+            target_face.landmarks, crop_size=self.work_size, landmarks_106=target_face.landmarks_106
+        )
+        if smoother is not None and SMOOTH_TRANSFORM_PARAMS:
+            affine_hi = smoother.smooth_similarity_matrix(raw_affine_hi)
+        else:
+            affine_hi = raw_affine_hi
+
         aligned_hi, affine_hi = FaceAligner.align_crop(
-            target_frame, target_face.landmarks, crop_size=self.work_size
+            target_frame,
+            target_face.landmarks,
+            crop_size=self.work_size,
+            landmarks_106=target_face.landmarks_106,
+            affine_matrix=affine_hi,
         )
         aligned_128 = cv2.resize(aligned_hi, self.input_size, interpolation=cv2.INTER_AREA)
 

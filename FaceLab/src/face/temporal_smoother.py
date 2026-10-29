@@ -125,10 +125,12 @@ class TemporalSmoother:
         self.scene_cut_ratio = float(scene_cut_ratio)
         self.hold_frames = max(0, int(hold_frames))
         self.one_euro = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
+        self.transform_one_euro = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.prev_landmarks: np.ndarray | None = None
         self.prev_bbox: np.ndarray | None = None
         self.prev_stats: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
         self.prev_mask: np.ndarray | None = None
+        self.last_timestamp_s: float | None = None
         self.missing_count: int = 0
 
     @staticmethod
@@ -159,13 +161,38 @@ class TemporalSmoother:
             # Detecta corte de cena de forma relativa ao tamanho do rosto (independente da resolução)
             if max_disp > self.scene_cut_ratio * face_size:
                 self.one_euro.reset()
+                self.transform_one_euro.reset()
 
         smoothed = self.one_euro.filter(lmk, timestamp_s=timestamp_s, scale=face_size)
         self.prev_landmarks = smoothed.copy()
+        self.last_timestamp_s = timestamp_s
         if bbox is not None:
             self.prev_bbox = np.asarray(bbox, dtype=np.float32).copy()
         self.missing_count = 0
         return smoothed
+
+    def smooth_similarity_matrix(
+        self,
+        matrix_m: np.ndarray,
+        timestamp_s: float | None = None,
+    ) -> np.ndarray:
+        """Suaviza diretamente os parâmetros da transformação de similaridade ``(scale, cos, sin, tx, ty)``."""
+        from src.face.face_aligner import FaceAligner
+
+        ts = timestamp_s if timestamp_s is not None else self.last_timestamp_s
+        params = FaceAligner.decompose_similarity_matrix(matrix_m)
+        # Normaliza tx, ty pela escala da matriz para que todas as componentes tenham derivada comparável
+        ref_scale = max(float(params[0]) * 128.0, 1.0)
+        norm_params = np.array(
+            [params[0], params[1], params[2], params[3] / ref_scale, params[4] / ref_scale],
+            dtype=np.float32,
+        )
+        filtered = self.transform_one_euro.filter(norm_params, timestamp_s=ts, scale=1.0)
+        restored = np.array(
+            [filtered[0], filtered[1], filtered[2], filtered[3] * ref_scale, filtered[4] * ref_scale],
+            dtype=np.float32,
+        )
+        return FaceAligner.compose_similarity_matrix(restored)
 
     def hold_or_reset(self) -> tuple[DetectedFace | None, float]:
         """Mantém o último rosto/landmarks por ``hold_frames`` quadros com fade-out de alpha.
@@ -232,10 +259,12 @@ class TemporalSmoother:
         return smoothed.astype(np.float32)
 
     def reset(self) -> None:
-        """Reinicia os estados anteriores dos filtros de landmarks, bbox, máscara, hold e cor."""
+        """Reinicia os estados anteriores dos filtros de landmarks, transform, bbox, máscara, hold e cor."""
         self.one_euro.reset()
+        self.transform_one_euro.reset()
         self.prev_landmarks = None
         self.prev_bbox = None
         self.prev_stats = None
         self.prev_mask = None
+        self.last_timestamp_s = None
         self.missing_count = 0

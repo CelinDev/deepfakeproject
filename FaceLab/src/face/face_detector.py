@@ -14,7 +14,7 @@ import logging
 
 import numpy as np
 
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, USE_LANDMARK_106
 from src.core.interfaces import FaceDetector
 from src.core.types import DetectedFace
 from src.inference.device_manager import DeviceManager
@@ -33,11 +33,16 @@ class InsightFaceDetector(FaceDetector):
         det_size: tuple[int, int] = (1024, 1024),
         det_thresh: float = 0.35,
         with_embedding: bool = True,
+        with_landmark_106: bool = USE_LANDMARK_106,
     ) -> None:
         # Import tardio: os testes que não usam o modelo não precisam do insightface.
         from insightface.app import FaceAnalysis
 
-        modules = ["detection", "recognition"] if with_embedding else ["detection"]
+        modules = ["detection"]
+        if with_landmark_106:
+            modules.append("landmark_2d_106")
+        if with_embedding:
+            modules.append("recognition")
         providers = onnx_providers(device_manager)
         # root=MODELS_DIR -> os pesos ficam em FaceLab/models/models/buffalo_l
         # (baixados automaticamente na primeira execução).
@@ -95,21 +100,28 @@ class InsightFaceDetector(FaceDetector):
                 self.set_detection_size(cur_size)
             faces = []
             if bboxes.shape[0] > 0:
+                from insightface.app.common import Face
+
+                lmk_model = self._app.models.get("landmark_2d_106")
                 for i in range(bboxes.shape[0]):
                     bbox = bboxes[i, 0:4]
                     det_score = bboxes[i, 4]
                     kps = kpss[i] if kpss is not None else None
-                    from insightface.app.common import Face
-                    faces.append(Face(bbox=bbox, kps=kps, det_score=det_score))
+                    face_obj = Face(bbox=bbox, kps=kps, det_score=det_score)
+                    if lmk_model is not None:
+                        lmk_model.get(image, face_obj)
+                    faces.append(face_obj)
 
         result: list[DetectedFace] = []
         for f in faces:
             emb = f.normed_embedding if getattr(f, "embedding", None) is not None else None
+            lmk106 = getattr(f, "landmark_2d_106", None)
             result.append(DetectedFace(
                 bbox=np.asarray(f.bbox, dtype=np.float32),
                 landmarks=None if f.kps is None else np.asarray(f.kps, dtype=np.float32),
                 score=float(f.det_score),
                 embedding=None if emb is None else np.asarray(emb, dtype=np.float32),
+                landmarks_106=None if lmk106 is None else np.asarray(lmk106, dtype=np.float32),
             ))
         return result
 

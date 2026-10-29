@@ -68,6 +68,7 @@ class DetectedFace:
     landmarks: np.ndarray | None
     score: float
     embedding: np.ndarray | None = None
+    landmarks_106: np.ndarray | None = None
 
     @property
     def area(self) -> float:

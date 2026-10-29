@@ -89,3 +89,46 @@ def test_hold_and_fade_out_before_reset() -> None:
     assert held_after is None
     assert fade_after == 0.0
     assert smoother.prev_landmarks is None
+
+
+def test_landmark_106_and_transform_param_smoothing_reduces_jitter() -> None:
+    """Compara o jitter da matriz de alinhamento entre 5 pontos ruidosos vs 106 pontos + suavização dos parâmetros."""
+    from src.face.face_aligner import FaceAligner
+
+    rng = np.random.default_rng(123)
+    base_5 = _base_landmarks()
+    # Constrói malha base sintética de 106 pontos alinhada com as regiões anatômicas de base_5
+    base_106 = np.zeros((106, 2), dtype=np.float32)
+    base_106[33:43] = base_5[0]
+    base_106[87:97] = base_5[1]
+    base_106[[80, 85, 86]] = base_5[2]
+    base_106[[52, 64, 65]] = base_5[3]
+    base_106[[61, 68, 69]] = base_5[4]
+
+    smoother_5 = TemporalSmoother(min_cutoff=1.5, beta=0.05)
+    smoother_106 = TemporalSmoother(min_cutoff=1.5, beta=0.05)
+    bbox = np.array([80.0, 80.0, 180.0, 200.0], dtype=np.float32)
+
+    tx_5_list: list[float] = []
+    tx_106_param_list: list[float] = []
+
+    for i in range(40):
+        t = i / 30.0
+        noisy_5 = base_5 + rng.normal(0.0, 1.8, size=base_5.shape).astype(np.float32)
+        noisy_106 = base_106 + rng.normal(0.0, 1.8, size=base_106.shape).astype(np.float32)
+
+        # Abordagem anterior: suaviza apenas os 5 pontos e estima a matriz
+        sm_5 = smoother_5.smooth_landmarks(noisy_5, timestamp_s=t, bbox=bbox)
+        m_5 = FaceAligner.estimate_affine_matrix(sm_5, crop_size=512)
+        tx_5_list.append(float(m_5[0, 2]))
+
+        # Nova abordagem (Seção 4): extrai de 106 pontos + suaviza os parâmetros da transformação de similaridade
+        sm_5_for_106 = smoother_106.smooth_landmarks(noisy_5, timestamp_s=t, bbox=bbox)
+        m_raw_106 = FaceAligner.estimate_affine_matrix(sm_5_for_106, crop_size=512, landmarks_106=noisy_106)
+        m_smooth_106 = smoother_106.smooth_similarity_matrix(m_raw_106, timestamp_s=t)
+        tx_106_param_list.append(float(m_smooth_106[0, 2]))
+
+    jitter_5 = float(np.std(tx_5_list[5:]))
+    jitter_106_param = float(np.std(tx_106_param_list[5:]))
+    assert jitter_106_param < jitter_5 * 0.65
+

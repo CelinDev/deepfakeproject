@@ -186,5 +186,40 @@ def test_warp_back_interpolation_and_antialiasing_prefilter(interp_name: str, ex
     assert out.shape == frame.shape
 
 
+def test_swapper_model_specs_and_fallback_to_inswapper_128() -> None:
+    """Garante que SWAPPER_MODEL_SPECS suporte inswapper_128 e hyperswap_256 (com fallback quando ausente)."""
+    from src.face.face_swapper import SWAPPER_MODEL_SPECS
+
+    spec_128 = SWAPPER_MODEL_SPECS["inswapper_128"]
+    spec_256 = SWAPPER_MODEL_SPECS["hyperswap_256"]
+    assert spec_128.input_size == (128, 128)
+    assert spec_256.input_size == (256, 256)
+    assert spec_256.norm_mean == (0.5, 0.5, 0.5)
+    assert spec_256.norm_std == (0.5, 0.5, 0.5)
+
+    # Verifica resolução de spec com fallback automático para inswapper_128 se hyperswap_1a_256.onnx não estiver baixado
+    resolved_spec, resolved_path = INSwapperModel._resolve_spec_and_path("hyperswap_256", None)
+    if not (MODELS_DIR / spec_256.filename).is_file():
+        assert resolved_spec.name == "inswapper_128"
+        assert resolved_path.name == "inswapper_128.onnx"
+
+    # Testa preprocess_crop e postprocess_output na especificação de 256px ([-1, 1])
+    dummy_swapper = INSwapperModel.__new__(INSwapperModel)
+    dummy_swapper.spec = spec_256
+    dummy_swapper.input_size = spec_256.input_size
+    dummy_swapper.emap = None
+
+    crop_512 = np.full((512, 512, 3), 255, dtype=np.uint8)
+    blob_256 = dummy_swapper.preprocess_crop(crop_512)
+    assert blob_256.shape == (1, 3, 256, 256)
+    # Branco (255 -> 1.0) com mean=0.5, std=0.5 deve resultar em +1.0
+    assert np.allclose(blob_256, 1.0, atol=1e-4)
+
+    restored_bgr = dummy_swapper.postprocess_output(blob_256)
+    assert restored_bgr.shape == (256, 256, 3)
+    assert np.allclose(restored_bgr, 255)
+
+
+
 
 

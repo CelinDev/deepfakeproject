@@ -14,6 +14,7 @@ Executa:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 
@@ -23,7 +24,13 @@ import onnx
 from onnx import numpy_helper
 import onnxruntime as ort
 
-from config.settings import ALIGNED_MASK_SIZE, MODELS_DIR, SMOOTH_TRANSFORM_PARAMS
+from config.settings import (
+    ALIGNED_MASK_SIZE,
+    HYPERSWAP_256_MODEL_PATH,
+    MODELS_DIR,
+    SMOOTH_TRANSFORM_PARAMS,
+    SWAPPER_MODEL_NAME,
+)
 from src.core.interfaces import FaceOccluder, FaceSwapper
 from src.core.types import DetectedFace
 from src.face.face_aligner import FaceAligner
@@ -37,16 +44,52 @@ from src.inference.model_loader import onnx_providers
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class SwapperModelSpec:
+    """Especificação de pré/pós-processamento e alinhamento para um modelo ONNX de face swap."""
+
+    name: str
+    filename: str
+    input_size: tuple[int, int]
+    norm_mean: tuple[float, float, float]
+    norm_std: tuple[float, float, float]
+    align_mode: str = "arcface_128"  # "arcface_128" ou "arcface_112"
+    uses_emap: bool = True
+
+
+SWAPPER_MODEL_SPECS: dict[str, SwapperModelSpec] = {
+    "inswapper_128": SwapperModelSpec(
+        name="inswapper_128",
+        filename="inswapper_128.onnx",
+        input_size=(128, 128),
+        norm_mean=(0.0, 0.0, 0.0),
+        norm_std=(1.0, 1.0, 1.0),
+        align_mode="arcface_128",
+        uses_emap=True,
+    ),
+    "hyperswap_256": SwapperModelSpec(
+        name="hyperswap_256",
+        filename=HYPERSWAP_256_MODEL_PATH.name,
+        input_size=(256, 256),
+        norm_mean=(0.5, 0.5, 0.5),
+        norm_std=(0.5, 0.5, 0.5),
+        align_mode="arcface_128",
+        uses_emap=False,
+    ),
+}
+
+
 class INSwapperModel(FaceSwapper):
-    """Implementa FaceSwapper utilizando o modelo ONNX inswapper_128."""
+    """Implementa FaceSwapper configurável para inswapper_128 (128x128) e hyperswap_256 (256x256)."""
 
     def __init__(
         self,
         device_manager: DeviceManager,
         model_path: str | Path | None = None,
         compositor: FaceCompositor | None = None,
+        model_name: str = SWAPPER_MODEL_NAME,
     ) -> None:
-        self.model_path = Path(model_path) if model_path else (MODELS_DIR / "inswapper_128.onnx")
+        self.spec, self.model_path = self._resolve_spec_and_path(model_name, model_path)
         if not self.model_path.is_file():
             raise FileNotFoundError(
                 f"Modelo de face swap não encontrado em: {self.model_path}. "
@@ -55,10 +98,15 @@ class INSwapperModel(FaceSwapper):
 
         self.compositor = compositor or FaceCompositor()
 
-        # Extrai a matriz emap dos initializers do grafo ONNX
-        model_proto = onnx.load(str(self.model_path))
-        self.emap = numpy_helper.to_array(model_proto.graph.initializer[-1])
-        del model_proto
+        # Extrai a matriz emap dos initializers do grafo ONNX (se presente, como no inswapper_128)
+        self.emap: np.ndarray | None = None
+        if self.spec.uses_emap:
+            model_proto = onnx.load(str(self.model_path))
+            if len(model_proto.graph.initializer) > 0:
+                last_init = numpy_helper.to_array(model_proto.graph.initializer[-1])
+                if last_init.shape == (512, 512):
+                    self.emap = last_init
+            del model_proto
 
         # Cria a sessão ONNX Runtime com os providers do DeviceManager
         providers = onnx_providers(device_manager)
@@ -69,13 +117,91 @@ class INSwapperModel(FaceSwapper):
             str(self.model_path), sess_options=sess_options, providers=providers
         )
         self.active_providers = self.session.get_providers()
-        logger.info("INSwapper carregado. Providers ativos: %s", self.active_providers)
+        logger.info("Swapper '%s' carregado (%s). Providers ativos: %s", self.spec.name, self.model_path.name, self.active_providers)
 
         inputs = self.session.get_inputs()
         self.input_names = [inp.name for inp in inputs]
+        self.target_input_name, self.source_input_name = self._identify_inputs(inputs)
         self.output_name = self.session.get_outputs()[0].name
-        self.input_size = (128, 128)
+        self.input_size = self.spec.input_size
         self.work_size = 512  # Super-amostragem de alinhamento e composição (512x512)
+
+    @staticmethod
+    def _resolve_spec_and_path(
+        model_name: str, model_path: str | Path | None
+    ) -> tuple[SwapperModelSpec, Path]:
+        requested_key = model_name.strip().lower()
+        spec = SWAPPER_MODEL_SPECS.get(requested_key, SWAPPER_MODEL_SPECS["inswapper_128"])
+
+        if model_path is not None:
+            p = Path(model_path)
+            if "256" in p.name or "hyperswap" in p.name.lower():
+                spec = SWAPPER_MODEL_SPECS["hyperswap_256"]
+            return spec, p
+
+        candidate = MODELS_DIR / spec.filename
+        if candidate.is_file():
+            return spec, candidate
+
+        # Fallback automático para inswapper_128 se o modelo 256px não estiver baixado
+        fallback_spec = SWAPPER_MODEL_SPECS["inswapper_128"]
+        fallback_path = MODELS_DIR / fallback_spec.filename
+        if requested_key != "inswapper_128":
+            logger.warning(
+                "Modelo '%s' (%s) não encontrado em models/; usando '%s' como padrão.",
+                requested_key,
+                candidate.name,
+                fallback_spec.name,
+            )
+        return fallback_spec, fallback_path
+
+    @staticmethod
+    def _identify_inputs(inputs: list) -> tuple[str, str]:
+        """Identifica qual tensor de entrada é o crop de imagem (4D) e qual é o embedding (2D)."""
+        if len(inputs) < 2:
+            name = inputs[0].name if inputs else "target"
+            return name, name
+        img_inp = inputs[0].name
+        emb_inp = inputs[1].name
+        for inp in inputs:
+            shape = getattr(inp, "shape", None) or []
+            if len(shape) == 4 or inp.name in ("target", "input"):
+                img_inp = inp.name
+            elif len(shape) == 2 or inp.name in ("source", "latent"):
+                emb_inp = inp.name
+        return img_inp, emb_inp
+
+    def preprocess_crop(self, aligned_crop: np.ndarray) -> np.ndarray:
+        """Redimensiona para ``self.input_size`` e aplica a normalização RGB da especificação."""
+        resized = (
+            aligned_crop
+            if aligned_crop.shape[:2] == self.input_size
+            else cv2.resize(aligned_crop, self.input_size, interpolation=cv2.INTER_AREA)
+        )
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        mean = np.array(self.spec.norm_mean, dtype=np.float32)
+        std = np.array(self.spec.norm_std, dtype=np.float32)
+        norm = (rgb - mean) / std
+        return norm.transpose((2, 0, 1))[np.newaxis, ...].astype(np.float32)
+
+    def postprocess_output(self, raw_pred: np.ndarray) -> np.ndarray:
+        """Converte a saída NCHW normalizada da rede de volta para imagem BGR uint8 [0..255]."""
+        img_rgb = raw_pred.transpose((0, 2, 3, 1))[0].astype(np.float32)
+        mean = np.array(self.spec.norm_mean, dtype=np.float32)
+        std = np.array(self.spec.norm_std, dtype=np.float32)
+        restored_01 = img_rgb * std + mean
+        bgr = np.clip(restored_01 * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
+        return bgr
+
+    def prepare_latent(self, embedding: np.ndarray) -> np.ndarray:
+        """Prepara o vetor latente de identidade (projeta na matriz emap se o modelo exigir)."""
+        latent = np.asarray(embedding, dtype=np.float32).reshape((1, -1))
+        if self.emap is not None:
+            latent = np.dot(latent, self.emap)
+        norm = float(np.linalg.norm(latent))
+        if norm > 1e-6:
+            latent = latent / norm
+        return latent.astype(np.float32)
 
     def swap(
         self,
@@ -115,34 +241,24 @@ class INSwapperModel(FaceSwapper):
             landmarks_106=target_face.landmarks_106,
             affine_matrix=affine_hi,
         )
-        aligned_128 = cv2.resize(aligned_hi, self.input_size, interpolation=cv2.INTER_AREA)
 
-        # 2. Prepara o blob de imagem (BGR -> RGB, escala 1/255, NCHW)
-        blob = cv2.dnn.blobFromImage(
-            aligned_128,
-            1.0 / 255.0,
-            self.input_size,
-            (0.0, 0.0, 0.0),
-            swapRB=True,
-        )
+        # 2. Prepara o blob de imagem e o vetor latente conforme a especificação do modelo (128px ou 256px)
+        blob = self.preprocess_crop(aligned_hi)
+        latent = self.prepare_latent(source_face.embedding)
 
-        # 3. Prepara o vetor latente do rosto de origem
-        latent = source_face.embedding.reshape((1, -1))
-        latent = np.dot(latent, self.emap)
-        norm = np.linalg.norm(latent)
-        if norm > 1e-6:
-            latent /= norm
-
-        # 4. Inferência ONNX (128x128 nativo da rede INSwapper)
+        # 3. Inferência ONNX acelerada
         preds = self.session.run(
             [self.output_name],
-            {self.input_names[0]: blob, self.input_names[1]: latent},
+            {self.target_input_name: blob, self.source_input_name: latent},
         )[0]
 
-        # 5. Converte a saída NCHW (RGB) para HWC (BGR [0..255]) e faz upsampling Lanczos4 para 512x512
-        img_fake = preds.transpose((0, 2, 3, 1))[0]
-        fake_128 = np.clip(img_fake * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
-        fake_bgr = cv2.resize(fake_128, (self.work_size, self.work_size), interpolation=cv2.INTER_LANCZOS4)
+        # 4. Converte a saída NCHW para BGR [0..255] e faz upsampling Lanczos4 para 512x512
+        fake_native = self.postprocess_output(preds)
+        fake_bgr = (
+            fake_native
+            if fake_native.shape[:2] == (self.work_size, self.work_size)
+            else cv2.resize(fake_native, (self.work_size, self.work_size), interpolation=cv2.INTER_LANCZOS4)
+        )
 
         # 6. Se fornecido source_crop (ex: tom esverdeado/mortiço de zumbi da fonte),
         # transfere a paleta de cores característica da fonte antes da composição

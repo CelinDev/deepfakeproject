@@ -49,6 +49,12 @@ MODELS = {
         "is_zip": False,
         "optional": True,
     },
+    "hyperswap_1a_256.onnx": {
+        "url": "https://huggingface.co/facefusion/models-3.3.0/resolve/main/hyperswap_1a_256.onnx",
+        "dest": MODELS_DIR / "hyperswap_1a_256.onnx",
+        "is_zip": False,
+        "optional": True,
+    },
     "buffalo_l.zip": {
         "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
         "dest": MODELS_DIR / "models" / "buffalo_l.zip",

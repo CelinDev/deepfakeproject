@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import ZOMBIE_REFERENCE_IMAGE
+from config.settings import LIVE_ENHANCER_INTERVAL, ZOMBIE_REFERENCE_IMAGE
 from src.core.interfaces import FrameSource
 from src.core.types import DetectedFace, Frame
 from src.face.face_aligner import FaceAligner
@@ -49,6 +49,7 @@ class LivePipeline:
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
         enable_enhancer: bool = True,
+        enhancer_interval: int = LIVE_ENHANCER_INTERVAL,
     ) -> None:
         """
         Args:
@@ -62,8 +63,8 @@ class LivePipeline:
             enable_enhancer: Ativa restauração de super-resolução e texturas faciais.
         """
         self.device_manager = DeviceManager(device_preference)
-        # Modo rápido: detecção com landmarks e sem cálculo obrigatório de embedding em todo quadro
-        self.detector = InsightFaceDetector(self.device_manager)
+        # Modo de alta precisão 1024x1024 para tracking sub-pixel na webcam
+        self.detector = InsightFaceDetector(self.device_manager, det_size=(1024, 1024))
         compositor = FaceCompositor(blur_amount=feather_amount)
         self.swapper = INSwapperModel(self.device_manager, compositor=compositor)
         self.parser = FaceParser(self.device_manager) if enable_head_swap else None
@@ -73,6 +74,7 @@ class LivePipeline:
         self.color_correct = color_correct
         self.enable_zombie = enable_zombie
         self.enable_head_swap = enable_head_swap
+        self.enhancer_interval = max(1, int(enhancer_interval))
         self.on_frame_rendered = on_frame_rendered
         self._is_running = False
 
@@ -116,8 +118,8 @@ class LivePipeline:
             self.detector.set_detection_threshold(0.2)
             faces = self.detector.detect(img)
 
-        # Restaura o limiar padrão para o processamento de quadros da webcam
-        self.detector.set_detection_threshold(0.5)
+        # Restaura o limiar padrão flexível para o processamento de quadros da webcam
+        self.detector.set_detection_threshold(0.35)
 
         if not faces:
             raise ValueError(f"Nenhum rosto foi detectado na imagem de referência: {path.name}")
@@ -174,8 +176,8 @@ class LivePipeline:
                     break
 
                 t0 = time.perf_counter()
-                # Em tempo real, busca embedding apenas a cada 8 quadros para economizar tempo
-                need_embedding = (tracker is None) or (frame_count % 8 == 0) or (tracker._missing > 0)
+                # Em tempo real, busca embedding apenas a cada 12 quadros para maximizar FPS
+                need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker._missing > 2)
                 faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
 
                 # Inicializa tracker com a pessoa que estiver em frente à câmera
@@ -196,22 +198,21 @@ class LivePipeline:
                             target_face=target,
                             source_face=source_face,
                             smoother=self.smoother,
+                            enhancer=self.enhancer,
                             blend_intensity=self.blend_intensity,
                             color_correct=self.color_correct,
                             source_crop=source_crop,
+                            enhancer_interval=self.enhancer_interval,
                         )
 
-                        # Super-resolução e Nitidez de Alta Frequência em Tempo Real (<1ms)
-                        if self.enhancer is not None:
-                            out_frame = self.enhancer.enhance_fast(out_frame, amount=0.35)
-
-                        # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (elimina aspecto de 'peruca/robô')
+                        # Preservação e Oclusão Natural dos Cabelos/Orelhas Reais (com cache a cada 2 frames para +FPS)
                         if self.parser is not None:
                             out_frame = self.parser.restore_natural_hair_and_ears(
                                 swapped_frame=out_frame,
                                 original_frame=frame.image,
                                 target_face=target,
                                 feather=5,
+                                reuse_interval=2,
                             )
                     else:
                         out_frame = frame.image.copy()

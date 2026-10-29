@@ -86,6 +86,7 @@ class INSwapperModel(FaceSwapper):
         blend_intensity: float = 1.0,
         color_correct: bool = True,
         source_crop: np.ndarray | None = None,
+        enhancer_interval: int = 1,
     ) -> np.ndarray:
         if target_face.landmarks is None:
             return target_frame  # Sem marcos faciais, impossível alinhar
@@ -137,9 +138,9 @@ class INSwapperModel(FaceSwapper):
             # Evita que o compositor sobreponha a iluminação do alvo em cima do tom da fonte
             color_correct = False
 
-        # 7. Restauração facial / Super-resolução opcional (GFPGAN já opera nativamente em 512x512!)
+        # 7. Restauração facial / Super-resolução opcional no recorte do rosto (GFPGAN 512x512)
         if enhancer is not None:
-            fake_bgr = enhancer.enhance(fake_bgr)
+            fake_bgr = enhancer.enhance(fake_bgr, reuse_interval=enhancer_interval)
 
         # 8. Composição em alta resolução (512x512) sobre o frame original
         return self.compositor.composite(

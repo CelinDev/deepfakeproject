@@ -53,3 +53,35 @@ def test_live_pipeline_with_dummy_source() -> None:
     assert len(received_frames) == 4
     assert received_frames[0].shape == (480, 640, 3)
 
+
+def test_enhancer_reuse_interval_in_crop() -> None:
+    """Garante que o GFPGAN no modo live possa rodar a cada N quadros e interpolar nos intermediários sem tocar no frame inteiro."""
+    from unittest.mock import MagicMock
+    from src.face.face_enhancer import FaceEnhancer
+
+    enh = FaceEnhancer.__new__(FaceEnhancer)
+    enh.input_size = (512, 512)
+    enh.input_name = "input"
+    enh.output_name = "output"
+    enh.blend_ratio = 1.0
+    enh._frame_count = 0
+    enh._cached_delta_512 = None
+
+    # Simula saída NCHW (1, 3, 512, 512) do ONNX Runtime
+    fake_out = np.full((1, 3, 512, 512), 0.5, dtype=np.float32)
+    enh.session = MagicMock()
+    enh.session.run.return_value = [fake_out]
+
+    crop_in = np.full((128, 128, 3), 100, dtype=np.uint8)
+    out1 = enh.enhance(crop_in, reuse_interval=3)
+    out2 = enh.enhance(crop_in, reuse_interval=3)
+    out3 = enh.enhance(crop_in, reuse_interval=3)
+    out4 = enh.enhance(crop_in, reuse_interval=3)
+
+    assert out1.shape == (512, 512, 3)
+    assert out2.shape == (512, 512, 3)
+    assert out3.shape == (512, 512, 3)
+    assert out4.shape == (512, 512, 3)
+    # Com reuse_interval=3 e 4 quadros (índices 0, 1, 2, 3), a sessão ONNX só deve rodar nos quadros 0 e 3 (2 vezes)
+    assert enh.session.run.call_count == 2
+

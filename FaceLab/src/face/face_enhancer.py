@@ -56,30 +56,48 @@ class FaceEnhancer:
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
         self.input_size = (512, 512)
+        self._frame_count: int = 0
+        self._cached_delta_512: np.ndarray | None = None
 
-    def enhance_fast(self, face_bgr: np.ndarray, amount: float = 0.45) -> np.ndarray:
+    def reset_cache(self) -> None:
+        """Limpa o cache temporal de detalhes do GFPGAN."""
+        self._frame_count = 0
+        self._cached_delta_512 = None
+
+    def enhance_fast(self, face_bgr: np.ndarray, amount: float = 0.35) -> np.ndarray:
         """
-        Restauração de alta frequência e super-resolução adaptativa em tempo real (<1ms).
-        Ideal para webcam / streaming com taxa de quadros máxima.
+        Realce leve de micro-contraste restrito exclusivamente ao recorte (crop) do rosto.
+        Operação rápida (~1 a 3 ms em um crop 512x512 na CPU).
         """
-        # Filtro de micro-contraste e realce de textura de pele (Unsharp Masking com retenção de ruído)
-        gaussian = cv2.GaussianBlur(face_bgr, (0, 0), sigmaX=2.0, sigmaY=2.0)
-        sharpened = cv2.addWeighted(face_bgr, 1.0 + amount, gaussian, -amount, 0)
+        gaussian = cv2.GaussianBlur(face_bgr, (0, 0), sigmaX=1.8, sigmaY=1.8)
+        return cv2.addWeighted(face_bgr, 1.0 + amount, gaussian, -amount, 0)
 
-        # Realce adaptativo de contornos finos (íris, cílios, lábios)
-        kernel = np.array([[0, -0.5, 0], [-0.5, 3.0, -0.5], [0, -0.5, 0]], dtype=np.float32)
-        edge_detail = cv2.filter2D(face_bgr, -1, kernel)
+    def enhance(self, face_bgr: np.ndarray, reuse_interval: int = 1) -> np.ndarray:
+        """Restaura e retorna o recorte facial BGR em 512x512 (resolução nativa do GFPGAN).
 
-        return cv2.addWeighted(sharpened, 0.75, edge_detail, 0.25, 0)
-
-    def enhance(self, face_bgr: np.ndarray) -> np.ndarray:
-        """Restaura e retorna o recorte facial BGR em 512x512 (resolução nativa do GFPGAN)."""
-        # 1. Redimensiona a entrada para 512x512
+        Args:
+            face_bgr: Recorte facial BGR alinhado.
+            reuse_interval: Se > 1, executa a rede GFPGAN a cada ``reuse_interval`` quadros
+                            e reutiliza/interpola o residual de alta frequência nos quadros
+                            intermediários com realce leve no crop.
+        """
+        self._frame_count += 1
         resized_512 = (
             face_bgr
             if face_bgr.shape[:2] == self.input_size
             else cv2.resize(face_bgr, self.input_size, interpolation=cv2.INTER_CUBIC)
         )
+
+        # Se estivermos em um quadro intermediário do modo live, reaproveita o detalhe residual do GFPGAN
+        if (
+            reuse_interval > 1
+            and self._cached_delta_512 is not None
+            and (self._frame_count - 1) % reuse_interval != 0
+        ):
+            interpolated = np.clip(
+                resized_512.astype(np.float32) + self._cached_delta_512, 0.0, 255.0
+            ).astype(np.uint8)
+            return self.enhance_fast(interpolated, amount=0.20)
 
         # 2. BGR -> RGB e normalização para [-1.0, 1.0]
         rgb = cv2.cvtColor(resized_512, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -98,9 +116,13 @@ class FaceEnhancer:
 
         # 6. Mistura proporcional em 512x512 para preservar naturalidade sem perder resolução
         if self.blend_ratio < 1.0:
-            return cv2.addWeighted(
+            final_512 = cv2.addWeighted(
                 enhanced_512, self.blend_ratio, resized_512, 1.0 - self.blend_ratio, 0
             )
+        else:
+            final_512 = enhanced_512
 
-        return enhanced_512
+        # Armazena o residual de super-resolução para interpolar nos quadros intermediários
+        self._cached_delta_512 = final_512.astype(np.float32) - resized_512.astype(np.float32)
+        return final_512
 

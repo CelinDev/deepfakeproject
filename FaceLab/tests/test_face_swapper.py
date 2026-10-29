@@ -153,4 +153,38 @@ def test_compositor_blend_modes_and_timing(blend_mode: str) -> None:
     assert compositor.last_blend_ms >= 0.0
 
 
+@pytest.mark.parametrize("interp_name,expected_flag", [("cubic", cv2.INTER_CUBIC), ("lanczos4", cv2.INTER_LANCZOS4)])
+def test_warp_back_interpolation_and_antialiasing_prefilter(interp_name: str, expected_flag: int) -> None:
+    """Garante que o warp de volta use INTER_CUBIC/INTER_LANCZOS4 e filtre aliasing quando o rosto no frame é menor que o crop."""
+    assert FaceCompositor.resolve_warp_flag(interp_name) == expected_flag
+
+    # Cria padrão xadrez de altíssima frequência (1px alternado 0 e 255) no crop 512x512
+    yy, xx = np.indices((512, 512))
+    checker = (((xx + yy) % 2) * 255).astype(np.uint8)
+    fake_crop = np.stack([checker, checker, checker], axis=-1)
+
+    # Rosto pequeno no frame (~80x80 px, logo downsample_ratio ≈ 512 / 80 = 6.4x)
+    scaled_m_downscale = np.array([[6.4, 0.0, 0.0], [0.0, 6.4, 0.0]], dtype=np.float32)
+    filtered = FaceCompositor.prefilter_for_downscale(fake_crop, scaled_m_downscale)
+    # O pré-filtro anti-aliasing deve atenuar drasticamente a energia de Nyquist do xadrez 1px
+    assert float(filtered.std()) < float(fake_crop.std()) * 0.25
+
+    # Quando o rosto no frame é maior ou igual ao crop (downsample_ratio <= 1.15), não deve borrar nada
+    scaled_m_upscale = np.array([[0.8, 0.0, 0.0], [0.0, 0.8, 0.0]], dtype=np.float32)
+    untouched = FaceCompositor.prefilter_for_downscale(fake_crop, scaled_m_upscale)
+    assert np.array_equal(untouched, fake_crop)
+
+    # Verifica integração ponta a ponta no composite com warp_interpolation configurada
+    comp = FaceCompositor(warp_interpolation=interp_name, prefilter_shrink=True, blend_mode="alpha")
+    frame = np.full((240, 240, 3), 100, dtype=np.uint8)
+    small_lmk = np.array(
+        [[105.0, 105.0], [135.0, 105.0], [120.0, 120.0], [110.0, 135.0], [130.0, 135.0]],
+        dtype=np.float32,
+    )
+    aligned_512, m_512 = FaceAligner.align_crop(frame, small_lmk, crop_size=512)
+    out = comp.composite(frame, fake_crop, aligned_512, m_512, color_correct=False)
+    assert out.shape == frame.shape
+
+
+
 

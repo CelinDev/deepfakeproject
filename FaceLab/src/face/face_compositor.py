@@ -19,6 +19,8 @@ from config.settings import (
     COMPOSITOR_BLEND_MODE,
     ENABLE_BORDER_LOWFREQ_COLOR,
     LAPLACIAN_PYRAMID_LEVELS,
+    WARP_BACK_INTERPOLATION,
+    WARP_PREFILTER_SHRINK,
 )
 from src.face.temporal_smoother import TemporalSmoother
 
@@ -35,13 +37,42 @@ class FaceCompositor:
         mask_size: int = ALIGNED_MASK_SIZE,
         blend_mode: str = COMPOSITOR_BLEND_MODE,
         pyramid_levels: int = LAPLACIAN_PYRAMID_LEVELS,
+        warp_interpolation: str = WARP_BACK_INTERPOLATION,
+        prefilter_shrink: bool = WARP_PREFILTER_SHRINK,
     ) -> None:
         self.blur_amount = blur_amount if blur_amount % 2 != 0 else blur_amount + 1
         self.erode_amount = erode_amount
         self.mask_size = int(mask_size)
         self.blend_mode = str(blend_mode).lower()
         self.pyramid_levels = max(2, int(pyramid_levels))
+        self.warp_interpolation = str(warp_interpolation).lower()
+        self.prefilter_shrink = bool(prefilter_shrink)
         self.last_blend_ms: float = 0.0
+
+    @staticmethod
+    def resolve_warp_flag(interpolation: str) -> int:
+        """Converte o nome da interpolação ('cubic', 'lanczos4', 'linear') para a flag do OpenCV."""
+        interp = interpolation.strip().lower()
+        if interp == "lanczos4":
+            return cv2.INTER_LANCZOS4
+        if interp == "linear":
+            return cv2.INTER_LINEAR
+        return cv2.INTER_CUBIC
+
+    @staticmethod
+    def prefilter_for_downscale(fake_crop: np.ndarray, scaled_affine: np.ndarray) -> np.ndarray:
+        """Aplica pré-filtro gaussiano proporcional (anti-aliasing) quando o rosto no frame é menor que o crop.
+
+        ``scaled_affine`` mapeia ``frame -> fake_crop``; logo a norma da primeira linha mede o fator
+        de ampliação ``crop_px / frame_px``. Quando ``crop_px / frame_px > 1.15`` (isto é, o warp de
+        volta reduz a resolução da imagem), filtramos frequências acima do limite de Nyquist do destino
+        para evitar serrilhado e cintilação (shimmering) nos poros e bordas.
+        """
+        downsample_ratio = float(np.hypot(scaled_affine[0, 0], scaled_affine[0, 1]))
+        if downsample_ratio <= 1.15:
+            return fake_crop
+        sigma = min(4.0, 0.45 * (downsample_ratio - 1.0))
+        return cv2.GaussianBlur(fake_crop, (0, 0), sigmaX=sigma, sigmaY=sigma)
 
     @classmethod
     def get_cached_ellipse(cls, height: int, width: int) -> np.ndarray:
@@ -366,7 +397,13 @@ class FaceCompositor:
         local_inv[1, 2] -= y1
         roi_w, roi_h = x2 - x1, y2 - y1
 
-        warped_fake = cv2.warpAffine(fake_crop, local_inv, (roi_w, roi_h), borderValue=0.0, flags=cv2.INTER_LINEAR)
+        # Pré-filtro anti-aliasing quando o rosto no frame é menor que o fake_crop (ex: rosto de 140px vs crop 512px)
+        crop_to_warp = (
+            self.prefilter_for_downscale(fake_crop, scaled_m) if self.prefilter_shrink else fake_crop
+        )
+        warp_flag = self.resolve_warp_flag(self.warp_interpolation)
+
+        warped_fake = cv2.warpAffine(crop_to_warp, local_inv, (roi_w, roi_h), borderValue=0.0, flags=warp_flag)
         warped_mask = cv2.warpAffine(mask, local_inv, (roi_w, roi_h), borderValue=0.0, flags=cv2.INTER_LINEAR)
 
         alpha = np.clip(warped_mask[..., np.newaxis] * float(blend_intensity), 0.0, 1.0)

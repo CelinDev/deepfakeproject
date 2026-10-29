@@ -105,6 +105,47 @@ def test_select_target_manual_by_index_point_and_embedding() -> None:
     assert TargetFaceTracker.select_target(faces, target_embedding=PESSOA_A) is f_left
 
 
+def test_optical_flow_propagator_tracks_intermediate_and_falls_back_on_low_confidence() -> None:
+    """Garante que OpticalFlowPropagator propague landmarks entre detecções SCRFD e retorne None quando a confiança cai."""
+    import cv2
+    from src.face.face_tracker import OpticalFlowPropagator
+
+    propagator = OpticalFlowPropagator(min_confidence=0.65)
+    # Cria quadro texturizado sintético e desloca +6 pixels em X no quadro seguinte
+    rng = np.random.default_rng(99)
+    base_patch = rng.integers(30, 220, size=(240, 320, 3), dtype=np.uint8)
+    base_patch = cv2.GaussianBlur(base_patch, (5, 5), 1.0)
+
+    M_shift = np.array([[1.0, 0.0, 6.0], [0.0, 1.0, -3.0]], dtype=np.float32)
+    shifted_patch = cv2.warpAffine(base_patch, M_shift, (320, 240), borderMode=cv2.BORDER_REFLECT)
+
+    lmk0 = np.array(
+        [[110.0, 90.0], [170.0, 90.0], [140.0, 120.0], [120.0, 150.0], [160.0, 150.0]],
+        dtype=np.float32,
+    )
+    face0 = DetectedFace(
+        bbox=np.array([90.0, 60.0, 190.0, 180.0], dtype=np.float32),
+        landmarks=lmk0,
+        score=0.95,
+        embedding=PESSOA_A,
+    )
+
+    propagator.update_reference(base_patch)
+    prop_face, conf = propagator.propagate(shifted_patch, face0)
+    assert prop_face is not None
+    assert conf >= 0.65
+    assert prop_face.landmarks is not None
+    # Os landmarks propagados devem ter acompanhado o deslocamento (+6, -3)
+    mean_shift = (prop_face.landmarks - lmk0).mean(axis=0)
+    assert np.allclose(mean_shift, [6.0, -3.0], atol=1.0)
+
+    # Se o próximo quadro for completamente preto (oclusão total / perda de textura), a confiança cai e retorna None
+    black_frame = np.zeros_like(base_patch)
+    lost_face, lost_conf = propagator.propagate(black_frame, prop_face)
+    assert lost_face is None
+
+
+
 
 
 MODEL_DIR = MODELS_DIR / "models" / "buffalo_l"

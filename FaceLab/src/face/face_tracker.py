@@ -15,9 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from config.settings import (
+    OPTICAL_FLOW_MIN_CONFIDENCE,
     TRACKER_EMBEDDING_EMA_ALPHA,
     TRACKER_EMBEDDING_UPDATE_SIM,
     TRACKER_VELOCITY_TOLERANCE_FRAMES,
@@ -196,4 +198,96 @@ class TargetFaceTracker:
                 if norm > 1e-6:
                     self.target_embedding = (blended / norm).astype(np.float32)
         return best
+
+
+class OpticalFlowPropagator:
+    """Propaga landmarks (5 e 106 pontos) e bbox nos quadros intermediários usando Lucas-Kanade piramidal.
+
+    Inclui verificação forward-backward de erro para medir a confiança da propagação;
+    se a confiança cair abaixo de ``min_confidence``, retorna ``(None, 0.0)`` para forçar
+    redetecção imediata pelo SCRFD.
+    """
+
+    def __init__(self, min_confidence: float = OPTICAL_FLOW_MIN_CONFIDENCE) -> None:
+        self.min_confidence = float(min_confidence)
+        self._prev_gray: np.ndarray | None = None
+        self._lk_params = dict(
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 15, 0.03),
+        )
+
+    def reset(self) -> None:
+        self._prev_gray = None
+
+    def update_reference(self, frame_bgr: np.ndarray) -> None:
+        """Atualiza o quadro cinza de referência após uma detecção SCRFD completa."""
+        self._prev_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+    def propagate(
+        self,
+        frame_bgr: np.ndarray,
+        prev_face: DetectedFace | None,
+    ) -> tuple[DetectedFace | None, float]:
+        """Propaga ``prev_face`` para ``frame_bgr`` e retorna ``(propagated_face, confidence)``."""
+        if prev_face is None or prev_face.landmarks is None or self._prev_gray is None:
+            return None, 0.0
+
+        curr_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        if curr_gray.shape != self._prev_gray.shape:
+            self._prev_gray = curr_gray
+            return None, 0.0
+
+        pts5 = prev_face.landmarks.astype(np.float32)
+        has_106 = prev_face.landmarks_106 is not None and prev_face.landmarks_106.shape == (106, 2)
+        if has_106:
+            all_pts = np.vstack([pts5, prev_face.landmarks_106.astype(np.float32)])
+        else:
+            all_pts = pts5
+
+        p0 = all_pts.reshape(-1, 1, 2)
+        p1, st_fwd, _ = cv2.calcOpticalFlowPyrLK(self._prev_gray, curr_gray, p0, None, **self._lk_params)
+        if p1 is None or st_fwd is None:
+            self._prev_gray = curr_gray
+            return None, 0.0
+
+        # Consistência forward-backward para detectar oclusão repentina ou perda de rastreio
+        p0_back, st_bwd, _ = cv2.calcOpticalFlowPyrLK(curr_gray, self._prev_gray, p1, None, **self._lk_params)
+        self._prev_gray = curr_gray
+        if p0_back is None or st_bwd is None:
+            return None, 0.0
+
+        valid_mask = (st_fwd.reshape(-1) == 1) & (st_bwd.reshape(-1) == 1)
+        valid_ratio = float(np.mean(valid_mask[:5]))
+        if valid_ratio < 0.80:
+            return None, 0.0
+
+        fb_err = np.linalg.norm((p0 - p0_back).reshape(-1, 2)[:5], axis=1)
+        face_w = max(float(prev_face.bbox[2] - prev_face.bbox[0]), 16.0)
+        mean_rel_err = float(np.mean(fb_err)) / face_w
+        # Confiança decai suavemente conforme o erro forward-backward relativo cresce
+        confidence = float(np.clip(valid_ratio * np.exp(-12.0 * mean_rel_err), 0.0, 1.0))
+        if confidence < self.min_confidence:
+            return None, confidence
+
+        tracked_pts = p1.reshape(-1, 2).astype(np.float32)
+        new_pts5 = tracked_pts[:5]
+        new_pts106 = tracked_pts[5:] if has_106 else None
+
+        # Atualiza a bbox aplicando a translação e escala mediana dos pontos rastreados
+        delta = np.median(new_pts5 - pts5, axis=0)
+        new_bbox = prev_face.bbox.astype(np.float32).copy()
+        new_bbox[0] += float(delta[0])
+        new_bbox[2] += float(delta[0])
+        new_bbox[1] += float(delta[1])
+        new_bbox[3] += float(delta[1])
+
+        propagated = DetectedFace(
+            bbox=new_bbox,
+            landmarks=new_pts5,
+            score=float(prev_face.score * confidence),
+            embedding=prev_face.embedding,
+            landmarks_106=new_pts106,
+        )
+        return propagated, confidence
 

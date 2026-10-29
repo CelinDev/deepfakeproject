@@ -63,6 +63,14 @@ SMOOTH_TRANSFORM_PARAMS: bool = True         # Suaviza parâmetros da transforma
 SWAPPER_MODEL_NAME: str = "inswapper_128"    # Modelo de swap padrão ("inswapper_128" ou "hyperswap_256")
 HYPERSWAP_256_MODEL_PATH: Path = MODELS_DIR / "hyperswap_1a_256.onnx"
 
+# Parâmetros de performance e latência (Seção 6)
+LIVE_DETECT_INTERVAL: int = 3                # Executa SCRFD completo a cada N quadros na webcam e propaga via Lucas-Kanade nos intermediários
+OPTICAL_FLOW_MIN_CONFIDENCE: float = 0.65    # Confiança mínima do fluxo óptico para aceitar propagação sem redetectar
+ORT_CUDNN_CONV_ALGO_SEARCH: str = "HEURISTIC"  # Busca rápida de algoritmos cuDNN ("HEURISTIC" evita travamentos de benchmark)
+ORT_ENABLE_IO_BINDING: bool = True           # Usa IOBinding no ONNX Runtime quando disponível
+VIDEO_QUEUE_SIZE: int = 16                   # Capacidade máxima das filas produtor/consumidor no processamento offline
+VIDEO_TWO_PASS_SMOOTH_WINDOW: int = 5        # Meia-janela (±N quadros, total 2N+1) para suavização não causal em dois passes
+
 
 def find_executable(name: str) -> Path | None:
     """Localiza um executável (ex.: 'ffmpeg', 'ffprobe').

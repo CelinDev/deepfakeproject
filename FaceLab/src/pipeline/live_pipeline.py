@@ -17,7 +17,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import LIVE_ENHANCER_INTERVAL, USE_LEGACY_BBOX_RESTORE, ZOMBIE_REFERENCE_IMAGE
+from config.settings import (
+    LIVE_DETECT_INTERVAL,
+    LIVE_ENHANCER_INTERVAL,
+    USE_LEGACY_BBOX_RESTORE,
+    ZOMBIE_REFERENCE_IMAGE,
+)
 from src.core.interfaces import FrameSource
 from src.core.types import DetectedFace, Frame
 from src.face.face_aligner import FaceAligner
@@ -27,7 +32,7 @@ from src.face.face_enhancer import FaceEnhancer
 from src.face.face_occluder import XSegOccluder
 from src.face.face_parser import NATURAL_HAIR_AND_OCCLUSION_CLASSES, FaceParser
 from src.face.face_swapper import INSwapperModel
-from src.face.face_tracker import TargetFaceTracker
+from src.face.face_tracker import OpticalFlowPropagator, TargetFaceTracker
 from src.face.temporal_smoother import TemporalSmoother
 from src.face.zombie_transformer import ZombieTransformer
 from src.inference.device_manager import DeviceManager, DevicePreference
@@ -51,6 +56,7 @@ class LivePipeline:
         enable_head_swap: bool = True,
         enable_enhancer: bool = True,
         enhancer_interval: int = LIVE_ENHANCER_INTERVAL,
+        detect_interval: int = LIVE_DETECT_INTERVAL,
         use_legacy_bbox_restore: bool = USE_LEGACY_BBOX_RESTORE,
     ) -> None:
         """
@@ -78,6 +84,8 @@ class LivePipeline:
         self.enable_zombie = enable_zombie
         self.enable_head_swap = enable_head_swap
         self.enhancer_interval = max(1, int(enhancer_interval))
+        self.detect_interval = max(1, int(detect_interval))
+        self.flow_propagator = OpticalFlowPropagator()
         self.use_legacy_bbox_restore = bool(use_legacy_bbox_restore)
         self.on_frame_rendered = on_frame_rendered
         self._is_running = False
@@ -169,8 +177,10 @@ class LivePipeline:
         source = camera_source or WebcamSource(camera_index=camera_index, width=width, height=height)
 
         tracker: TargetFaceTracker | None = None
+        last_valid_target: DetectedFace | None = None
         self._is_running = True
         self.smoother.reset()
+        self.flow_propagator.reset()
 
         frame_count = 0
         fps = 0.0
@@ -185,21 +195,40 @@ class LivePipeline:
                 t0 = time.perf_counter()
                 # Em tempo real, busca embedding apenas a cada 12 quadros para maximizar FPS
                 need_embedding = (tracker is None) or (frame_count % 12 == 0) or (tracker.missing > 2)
-                faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
+                should_detect = (
+                    need_embedding
+                    or (self.detect_interval <= 1)
+                    or (frame_count % self.detect_interval == 0)
+                    or (last_valid_target is None)
+                )
 
-                # Inicializa tracker com o rosto escolhido manualmente (embedding, clique, índice) ou o maior rosto
-                if tracker is None and faces:
-                    alvo = TargetFaceTracker.select_target(
-                        faces,
-                        target_embedding=target_embedding,
-                        target_index=target_face_index,
-                        target_point=target_point,
-                    )
-                    if alvo and alvo.embedding is not None:
-                        tracker = TargetFaceTracker(alvo.embedding)
-                        tracker._last_bbox = alvo.bbox.astype(np.float32).copy()
+                target: DetectedFace | None = None
+                if not should_detect:
+                    # Propaga landmarks/bbox via fluxo óptico de Lucas-Kanade; redetecta se a confiança cair
+                    propagated, conf = self.flow_propagator.propagate(frame.image, last_valid_target)
+                    if propagated is not None:
+                        target = tracker.update([propagated]) if tracker else propagated
+                    else:
+                        should_detect = True
 
-                target = tracker.update(faces) if tracker else None
+                if should_detect:
+                    faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
+                    self.flow_propagator.update_reference(frame.image)
+
+                    # Inicializa tracker com o rosto escolhido manualmente (embedding, clique, índice) ou o maior rosto
+                    if tracker is None and faces:
+                        alvo = TargetFaceTracker.select_target(
+                            faces,
+                            target_embedding=target_embedding,
+                            target_index=target_face_index,
+                            target_point=target_point,
+                        )
+                        if alvo and alvo.embedding is not None:
+                            tracker = TargetFaceTracker(alvo.embedding)
+                            tracker._last_bbox = alvo.bbox.astype(np.float32).copy()
+
+                    target = tracker.update(faces) if tracker else None
+
                 fade_factor = 1.0
 
                 if target is not None and target.landmarks is not None:
@@ -207,7 +236,9 @@ class LivePipeline:
                         target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
                     )
                     target.landmarks = smoothed_lmk
+                    last_valid_target = target
                 else:
+                    last_valid_target = None
                     # Hold + fade-out suave do alpha por 5-8 quadros antes de resetar
                     target, fade_factor = self.smoother.hold_or_reset()
 

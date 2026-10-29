@@ -132,3 +132,40 @@ def test_landmark_106_and_transform_param_smoothing_reduces_jitter() -> None:
     jitter_106_param = float(np.std(tx_106_param_list[5:]))
     assert jitter_106_param < jitter_5 * 0.65
 
+
+def test_non_causal_two_pass_smoothing_zero_phase_and_scene_cut() -> None:
+    """Garante que smooth_sequence_non_causal suavize sem atraso de fase (zero-phase) e respeite cortes de cena."""
+    from src.core.types import DetectedFace
+
+    rng = np.random.default_rng(77)
+    base = _base_landmarks()
+    bbox = np.array([80.0, 80.0, 180.0, 200.0], dtype=np.float32)
+
+    # Cria uma trajetória senoidal com pico exatamente no quadro 15 + ruído
+    seq: list[DetectedFace | None] = []
+    true_x: list[float] = []
+    for i in range(31):
+        shift_x = float(20.0 * np.sin(np.pi * i / 30.0))
+        true_x.append(float(base[0, 0] + shift_x))
+        noise = rng.normal(0.0, 2.0, size=base.shape).astype(np.float32)
+        lmk_i = base.copy()
+        lmk_i[:, 0] += shift_x
+        seq.append(DetectedFace(bbox=bbox + np.array([shift_x, 0, shift_x, 0], np.float32), landmarks=lmk_i + noise, score=0.9))
+
+    # Adiciona um corte de cena abrupto no quadro 31 (+400px)
+    cut_lmk = base + 400.0
+    seq.append(DetectedFace(bbox=bbox + 400.0, landmarks=cut_lmk, score=0.9))
+
+    smoothed = TemporalSmoother.smooth_sequence_non_causal(seq, half_window=4)
+    assert len(smoothed) == len(seq)
+
+    # O pico da trajetória suavizada deve continuar centrado em torno do quadro 15 (zero-phase, sem atraso)
+    sm_x = [float(f.landmarks[0, 0]) for f in smoothed[:31] if f is not None and f.landmarks is not None]
+    peak_idx = int(np.argmax(sm_x))
+    assert 13 <= peak_idx <= 17
+
+    # E o quadro 31 após o corte de cena não deve ter sido puxado pela janela anterior
+    assert smoothed[31] is not None and smoothed[31].landmarks is not None
+    assert np.allclose(smoothed[31].landmarks, cut_lmk, atol=1e-3)
+
+

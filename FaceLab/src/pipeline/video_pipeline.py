@@ -14,6 +14,8 @@ Coordena todo o fluxo de ponta a ponta:
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,8 +24,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config.settings import OUTPUT_DIR, USE_LEGACY_BBOX_RESTORE, ZOMBIE_REFERENCE_IMAGE
-from src.core.types import DetectedFace, PipelineCancelled
+from config.settings import (
+    OUTPUT_DIR,
+    USE_LEGACY_BBOX_RESTORE,
+    VIDEO_QUEUE_SIZE,
+    VIDEO_TWO_PASS_SMOOTH_WINDOW,
+    ZOMBIE_REFERENCE_IMAGE,
+)
+from src.core.types import DetectedFace, Frame, PipelineCancelled
 from src.face.face_aligner import FaceAligner
 from src.face.face_compositor import FaceCompositor
 from src.face.face_detector import InsightFaceDetector
@@ -66,6 +74,9 @@ class VideoPipeline:
         enable_zombie: bool = False,
         enable_head_swap: bool = True,
         use_legacy_bbox_restore: bool = USE_LEGACY_BBOX_RESTORE,
+        two_pass_non_causal: bool = False,
+        two_pass_window: int = VIDEO_TWO_PASS_SMOOTH_WINDOW,
+        queue_size: int = VIDEO_QUEUE_SIZE,
     ) -> None:
         self.device_manager = DeviceManager(device_preference)
         self.detector = InsightFaceDetector(self.device_manager)
@@ -79,6 +90,9 @@ class VideoPipeline:
         self.enable_zombie = enable_zombie
         self.enable_head_swap = enable_head_swap
         self.use_legacy_bbox_restore = bool(use_legacy_bbox_restore)
+        self.two_pass_non_causal = bool(two_pass_non_causal)
+        self.two_pass_window = max(1, int(two_pass_window))
+        self.queue_size = max(2, int(queue_size))
         self.on_progress = on_progress
         self._is_cancelled = False
 
@@ -116,6 +130,45 @@ class VideoPipeline:
             raise ValueError("Não foi possível extrair o embedding facial da imagem de referência.")
         return source_face
 
+    def _collect_and_smooth_two_pass(
+        self,
+        v_path: Path,
+        target_embedding: np.ndarray | None = None,
+        target_face_index: int | None = None,
+        target_point: tuple[float, float] | None = None,
+    ) -> list[DetectedFace | None]:
+        """1º passe do modo não causal: detecta todos os quadros e suaviza landmarks com janela centrada ±N."""
+        logger.info(
+            "Iniciando 1º passe (detecção offline + suavização não causal centrada ±%d quadros)...",
+            self.two_pass_window,
+        )
+        raw_targets: list[DetectedFace | None] = []
+        tracker: TargetFaceTracker | None = None
+        idx = 0
+        with VideoFileSource(v_path) as pass1_source:
+            for frame in pass1_source.frames():
+                if self._is_cancelled:
+                    raise PipelineCancelled("Processamento cancelado pelo usuário.")
+                need_emb = (tracker is None) or (idx % 5 == 0) or (tracker.missing > 0)
+                faces = self.detector.detect(frame.image, compute_embeddings=need_emb)
+                if tracker is None and faces:
+                    primeiro_alvo = TargetFaceTracker.select_target(
+                        faces,
+                        target_embedding=target_embedding,
+                        target_index=target_face_index,
+                        target_point=target_point,
+                    )
+                    if primeiro_alvo and primeiro_alvo.embedding is not None:
+                        tracker = TargetFaceTracker(primeiro_alvo.embedding)
+                        tracker._last_bbox = primeiro_alvo.bbox.astype(np.float32).copy()
+                target = tracker.update(faces) if tracker else None
+                raw_targets.append(target)
+                idx += 1
+
+        return TemporalSmoother.smooth_sequence_non_causal(
+            raw_targets, half_window=self.two_pass_window
+        )
+
     def process(
         self,
         video_path: str | Path,
@@ -124,9 +177,11 @@ class VideoPipeline:
         target_embedding: np.ndarray | None = None,
         target_face_index: int | None = None,
         target_point: tuple[float, float] | None = None,
+        two_pass_non_causal: bool | None = None,
     ) -> Path:
-        """Executa o processamento completo do vídeo."""
+        """Executa o processamento completo do vídeo com pipeline produtor/consumidor em filas limitadas."""
         self._is_cancelled = False
+        use_two_pass = self.two_pass_non_causal if two_pass_non_causal is None else bool(two_pass_non_causal)
         v_path = validate_video_path(video_path)
         out_path = validate_output_path(
             output_path or (OUTPUT_DIR / f"{v_path.stem}_swapped.mp4"),
@@ -155,6 +210,15 @@ class VideoPipeline:
                     ref_img, source_face.landmarks, crop_size=self.swapper.input_size[0]
                 )
 
+        precomputed_targets: list[DetectedFace | None] | None = None
+        if use_two_pass:
+            precomputed_targets = self._collect_and_smooth_two_pass(
+                v_path,
+                target_embedding=target_embedding,
+                target_face_index=target_face_index,
+                target_point=target_point,
+            )
+
         source = VideoFileSource(v_path)
         info = source.info
         sink = VideoFileSink(
@@ -170,99 +234,182 @@ class VideoPipeline:
         start_time = time.perf_counter()
         processed_count = 0
 
-        logger.info("Iniciando pipeline de processamento de quadros...")
+        decode_queue: queue.Queue[Frame | BaseException | None] = queue.Queue(maxsize=self.queue_size)
+        encode_queue: queue.Queue[Frame | None] = queue.Queue(maxsize=self.queue_size)
+        encode_errors: list[BaseException] = []
+        stop_threads = threading.Event()
+
+        def _decode_worker() -> None:
+            try:
+                for frm in source.frames():
+                    while not stop_threads.is_set() and not self._is_cancelled:
+                        try:
+                            decode_queue.put(frm, timeout=0.05)
+                            break
+                        except queue.Full:
+                            continue
+                    if stop_threads.is_set() or self._is_cancelled:
+                        break
+            except BaseException as exc:
+                decode_queue.put(exc)
+            finally:
+                decode_queue.put(None)
+
+        def _encode_worker() -> None:
+            try:
+                while not stop_threads.is_set():
+                    try:
+                        item = encode_queue.get(timeout=0.05)
+                    except queue.Empty:
+                        if self._is_cancelled:
+                            break
+                        continue
+                    if item is None:
+                        break
+                    sink.write(item)
+            except BaseException as exc:
+                encode_errors.append(exc)
+                stop_threads.set()
+
+        logger.info("Iniciando pipeline produtor/consumidor de processamento de quadros...")
         with source, sink:
-            for frame in source.frames():
-                if self._is_cancelled:
-                    logger.warning("Processamento cancelado pelo usuário.")
-                    sink.abort()
-                    raise PipelineCancelled("Processamento cancelado pelo usuário.")
+            dec_thread = threading.Thread(target=_decode_worker, daemon=True)
+            enc_thread = threading.Thread(target=_encode_worker, daemon=True)
+            dec_thread.start()
+            enc_thread.start()
+            try:
+                while True:
+                    if self._is_cancelled:
+                        logger.warning("Processamento cancelado pelo usuário.")
+                        stop_threads.set()
+                        sink.abort()
+                        raise PipelineCancelled("Processamento cancelado pelo usuário.")
 
-                t0 = time.perf_counter()
-                need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)
-                faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
+                    if encode_errors:
+                        raise encode_errors[0]
 
-                # Inicializa o tracker com o rosto escolhido manualmente (embedding, clique, índice) ou o maior rosto
-                if tracker is None and faces:
-                    primeiro_alvo = TargetFaceTracker.select_target(
-                        faces,
-                        target_embedding=target_embedding,
-                        target_index=target_face_index,
-                        target_point=target_point,
-                    )
-                    if primeiro_alvo and primeiro_alvo.embedding is not None:
-                        tracker = TargetFaceTracker(primeiro_alvo.embedding)
-                        tracker._last_bbox = primeiro_alvo.bbox.astype(np.float32).copy()
+                    try:
+                        item = decode_queue.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
 
-                # Rastreia o alvo consistente ao longo do vídeo
-                target = tracker.update(faces) if tracker else None
-                fade_factor = 1.0
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
 
-                # Se o alvo foi localizado no quadro atual, suaviza; caso contrário, aplica hold + fade-out
-                if target is not None and target.landmarks is not None:
-                    smoothed_lmk = smoother.smooth_landmarks(
-                        target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
-                    )
-                    target.landmarks = smoothed_lmk
-                else:
-                    target, fade_factor = smoother.hold_or_reset()
+                    frame = item
+                    faces_count = 0
+                    fade_factor = 1.0
 
-                if target is not None and target.landmarks is not None:
-                    effective_blend = self.blend_intensity * fade_factor
-                    if source_face is not None:
-                        out_image = self.swapper.swap(
-                            target_frame=frame.image,
-                            target_face=target,
-                            source_face=source_face,
-                            smoother=smoother,
-                            enhancer=self.enhancer,
-                            blend_intensity=effective_blend,
-                            color_correct=self.color_correct,
-                            source_crop=source_crop,
-                            parser=None if self.use_legacy_bbox_restore else self.parser,
-                            occluder=self.occluder,
-                        )
+                    if precomputed_targets is not None and processed_count < len(precomputed_targets):
+                        # 2º passe: usa landmarks suavizados de forma não causal (zero atraso)
+                        target = precomputed_targets[processed_count]
+                        faces_count = 1 if target is not None else 0
+                        if target is not None and target.landmarks is not None:
+                            smoother.prev_landmarks = target.landmarks.copy()
+                            smoother.prev_bbox = target.bbox.copy()
+                            smoother.missing_count = 0
+                        else:
+                            target, fade_factor = smoother.hold_or_reset()
+                    else:
+                        need_embedding = (tracker is None) or (processed_count % 5 == 0) or (tracker.missing > 0)
+                        faces = self.detector.detect(frame.image, compute_embeddings=need_embedding)
+                        faces_count = len(faces)
 
-                        # Método legado opcional (segundo passe com recorte variável via bbox) para comparação
-                        if self.use_legacy_bbox_restore and self.parser is not None:
-                            out_image = self.parser.restore_natural_hair_and_ears(
-                                swapped_frame=out_image,
-                                original_frame=frame.image,
+                        if tracker is None and faces:
+                            primeiro_alvo = TargetFaceTracker.select_target(
+                                faces,
+                                target_embedding=target_embedding,
+                                target_index=target_face_index,
+                                target_point=target_point,
+                            )
+                            if primeiro_alvo and primeiro_alvo.embedding is not None:
+                                tracker = TargetFaceTracker(primeiro_alvo.embedding)
+                                tracker._last_bbox = primeiro_alvo.bbox.astype(np.float32).copy()
+
+                        target = tracker.update(faces) if tracker else None
+                        if target is not None and target.landmarks is not None:
+                            smoothed_lmk = smoother.smooth_landmarks(
+                                target.landmarks, timestamp_s=frame.timestamp_s, bbox=target.bbox
+                            )
+                            target.landmarks = smoothed_lmk
+                        else:
+                            target, fade_factor = smoother.hold_or_reset()
+
+                    if target is not None and target.landmarks is not None:
+                        effective_blend = self.blend_intensity * fade_factor
+                        if source_face is not None:
+                            out_image = self.swapper.swap(
+                                target_frame=frame.image,
                                 target_face=target,
-                                feather=5,
+                                source_face=source_face,
+                                smoother=smoother,
+                                enhancer=self.enhancer,
+                                blend_intensity=effective_blend,
+                                color_correct=self.color_correct,
+                                source_crop=source_crop,
+                                parser=None if self.use_legacy_bbox_restore else self.parser,
+                                occluder=self.occluder,
+                            )
+
+                            # Método legado opcional (segundo passe com recorte variável via bbox) para comparação
+                            if self.use_legacy_bbox_restore and self.parser is not None:
+                                out_image = self.parser.restore_natural_hair_and_ears(
+                                    swapped_frame=out_image,
+                                    original_frame=frame.image,
+                                    target_face=target,
+                                    feather=5,
+                                )
+                        else:
+                            out_image = frame.image.copy()
+
+                        # Refinamento de Halloween: se ativado sem swap zumbi (ou pós-swap), aplica grading fotográfico
+                        if self.enable_zombie and source_image_path is not None:
+                            out_image = ZombieTransformer.transform(
+                                out_image,
+                                landmarks=target.landmarks,
+                                intensity=fade_factor,
                             )
                     else:
-                        out_image = frame.image.copy()
+                        out_image = frame.image
 
-                    # Refinamento de Halloween: se ativado sem swap zumbi (ou pós-swap), aplica grading fotográfico
-                    if self.enable_zombie and source_image_path is not None:
-                        out_image = ZombieTransformer.transform(
-                            out_image,
-                            landmarks=target.landmarks,
-                            intensity=fade_factor,
+                    frame.image = out_image
+                    while not stop_threads.is_set() and not self._is_cancelled:
+                        try:
+                            encode_queue.put(frame, timeout=0.05)
+                            break
+                        except queue.Full:
+                            if encode_errors:
+                                raise encode_errors[0]
+                            continue
+
+                    processed_count += 1
+
+                    # Métricas e callback
+                    elapsed = time.perf_counter() - start_time
+                    fps_calc = processed_count / elapsed if elapsed > 0 else 0.0
+
+                    if self.on_progress:
+                        self.on_progress(
+                            PipelineProgress(
+                                current_frame=processed_count,
+                                total_frames=info.frame_count,
+                                fps=fps_calc,
+                                elapsed_seconds=elapsed,
+                                faces_detected=faces_count,
+                                target_found=target is not None,
+                            )
                         )
-                else:
-                    out_image = frame.image
 
-                frame.image = out_image
-                sink.write(frame)
-                processed_count += 1
-
-                # Métricas e callback
-                elapsed = time.perf_counter() - start_time
-                fps_calc = processed_count / elapsed if elapsed > 0 else 0.0
-
-                if self.on_progress:
-                    self.on_progress(
-                        PipelineProgress(
-                            current_frame=processed_count,
-                            total_frames=info.frame_count,
-                            fps=fps_calc,
-                            elapsed_seconds=elapsed,
-                            faces_detected=len(faces),
-                            target_found=target is not None,
-                        )
-                    )
+                encode_queue.put(None)
+                enc_thread.join(timeout=10.0)
+                if encode_errors:
+                    raise encode_errors[0]
+            finally:
+                stop_threads.set()
+                dec_thread.join(timeout=2.0)
+                enc_thread.join(timeout=2.0)
 
         total_time = time.perf_counter() - start_time
         logger.info(

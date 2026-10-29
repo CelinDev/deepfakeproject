@@ -268,3 +268,87 @@ class TemporalSmoother:
         self.prev_mask = None
         self.last_timestamp_s = None
         self.missing_count = 0
+
+    @staticmethod
+    def smooth_sequence_non_causal(
+        faces_seq: list[DetectedFace | None],
+        half_window: int = 5,
+        scene_cut_ratio: float = SCENE_CUT_FACE_RATIO,
+    ) -> list[DetectedFace | None]:
+        """Suavização não causal (zero-phase) com janela gaussiana centrada de ``±half_window`` quadros.
+
+        Usada no modo offline de dois passes: como todos os quadros já foram detectados no 1º passe,
+        ponderamos passado e futuro simetricamente (zero atraso/lag), respeitando cortes de cena
+        para não misturar planos diferentes.
+        """
+        n = len(faces_seq)
+        if n == 0 or half_window <= 0:
+            return list(faces_seq)
+
+        hw = int(half_window)
+        sigma = max(1.0, float(hw) * 0.5)
+        offsets = np.arange(-hw, hw + 1, dtype=np.float32)
+        base_weights = np.exp(-0.5 * (offsets / sigma) ** 2)
+
+        smoothed_seq: list[DetectedFace | None] = []
+        for i in range(n):
+            center_face = faces_seq[i]
+            if center_face is None or center_face.landmarks is None:
+                smoothed_seq.append(center_face)
+                continue
+
+            center_lmk = center_face.landmarks.astype(np.float32)
+            face_size = TemporalSmoother.estimate_face_size(center_lmk, bbox=center_face.bbox)
+            cut_thresh = scene_cut_ratio * face_size
+
+            acc_lmk = np.zeros_like(center_lmk)
+            acc_bbox = np.zeros(4, dtype=np.float32)
+            acc_106 = (
+                np.zeros_like(center_face.landmarks_106, dtype=np.float32)
+                if center_face.landmarks_106 is not None
+                else None
+            )
+            w_sum = 0.0
+            w_106_sum = 0.0
+
+            for k_idx, offset in enumerate(range(-hw, hw + 1)):
+                j = i + offset
+                if j < 0 or j >= n:
+                    continue
+                cand = faces_seq[j]
+                if cand is None or cand.landmarks is None:
+                    continue
+                cand_lmk = cand.landmarks.astype(np.float32)
+                # Não cruza cortes de cena na janela centrada
+                if float(np.max(np.linalg.norm(cand_lmk - center_lmk, axis=1))) > cut_thresh:
+                    continue
+
+                w = float(base_weights[k_idx])
+                acc_lmk += w * cand_lmk
+                acc_bbox += w * cand.bbox.astype(np.float32)
+                w_sum += w
+                if acc_106 is not None and cand.landmarks_106 is not None and cand.landmarks_106.shape == acc_106.shape:
+                    acc_106 += w * cand.landmarks_106.astype(np.float32)
+                    w_106_sum += w
+
+            if w_sum <= 1e-6:
+                smoothed_seq.append(center_face)
+                continue
+
+            new_lmk = (acc_lmk / w_sum).astype(np.float32)
+            new_bbox = (acc_bbox / w_sum).astype(np.float32)
+            new_106 = (
+                (acc_106 / w_106_sum).astype(np.float32)
+                if (acc_106 is not None and w_106_sum > 1e-6)
+                else center_face.landmarks_106
+            )
+            smoothed_seq.append(
+                DetectedFace(
+                    bbox=new_bbox,
+                    landmarks=new_lmk,
+                    score=center_face.score,
+                    embedding=center_face.embedding,
+                    landmarks_106=new_106,
+                )
+            )
+        return smoothed_seq

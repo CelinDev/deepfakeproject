@@ -125,3 +125,32 @@ def test_match_color_hist_skin_mask_and_clamped_gain() -> None:
     assert float(out_border[72, 64].mean()) < float(out_skin_mask[95, 64].mean())
 
 
+@pytest.mark.parametrize("blend_mode", ["alpha", "lowfreq_border", "laplacian"])
+def test_compositor_blend_modes_and_timing(blend_mode: str) -> None:
+    """Garante que os modos de blending ('alpha', 'lowfreq_border', 'laplacian') funcionem e meçam custo em ms."""
+    compositor = FaceCompositor(blur_amount=15, erode_amount=3, blend_mode=blend_mode, pyramid_levels=3)
+    # Tamanhos ímpares para garantir que pyrDown/pyrUp da pirâmide laplaciana lidem com dimensões não potências de 2
+    frame = np.full((315, 333, 3), 80, dtype=np.uint8)
+    landmarks = np.array(
+        [[115.0, 125.0], [195.0, 125.0], [155.0, 160.0], [125.0, 200.0], [185.0, 200.0]],
+        dtype=np.float32,
+    )
+    aligned_512, m_512 = FaceAligner.align_crop(frame, landmarks, crop_size=512)
+    fake_crop = np.full((512, 512, 3), 210, dtype=np.uint8)
+
+    result = compositor.composite(
+        original_frame=frame,
+        fake_crop=fake_crop,
+        aligned_original_crop=aligned_512,
+        affine_matrix=m_512,
+        color_correct=False,
+        blend_mode=blend_mode,
+    )
+    assert result.shape == frame.shape
+    assert result.dtype == np.uint8
+    assert result[160, 155, 0] > 180
+    assert result[10, 10, 0] == 80
+    assert compositor.last_blend_ms >= 0.0
+
+
+

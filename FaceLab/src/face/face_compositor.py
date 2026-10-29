@@ -7,6 +7,8 @@ Responsável por integrar o rosto sintetizado de volta ao quadro original de for
 """
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
@@ -14,7 +16,9 @@ from config.settings import (
     ALIGNED_MASK_SIZE,
     COLOR_STD_GAIN_MAX,
     COLOR_STD_GAIN_MIN,
+    COMPOSITOR_BLEND_MODE,
     ENABLE_BORDER_LOWFREQ_COLOR,
+    LAPLACIAN_PYRAMID_LEVELS,
 )
 from src.face.temporal_smoother import TemporalSmoother
 
@@ -29,10 +33,15 @@ class FaceCompositor:
         blur_amount: int = 15,
         erode_amount: int = 5,
         mask_size: int = ALIGNED_MASK_SIZE,
+        blend_mode: str = COMPOSITOR_BLEND_MODE,
+        pyramid_levels: int = LAPLACIAN_PYRAMID_LEVELS,
     ) -> None:
         self.blur_amount = blur_amount if blur_amount % 2 != 0 else blur_amount + 1
         self.erode_amount = erode_amount
         self.mask_size = int(mask_size)
+        self.blend_mode = str(blend_mode).lower()
+        self.pyramid_levels = max(2, int(pyramid_levels))
+        self.last_blend_ms: float = 0.0
 
     @classmethod
     def get_cached_ellipse(cls, height: int, width: int) -> np.ndarray:
@@ -196,6 +205,95 @@ class FaceCompositor:
         detailed = fake_crop.astype(np.float32) + high_freq * float(strength)
         return np.clip(detailed, 0, 255).astype(np.uint8)
 
+    @staticmethod
+    def laplacian_pyramid_blend(
+        fake_roi: np.ndarray,
+        orig_roi: np.ndarray,
+        alpha_mask: np.ndarray,
+        levels: int = LAPLACIAN_PYRAMID_LEVELS,
+    ) -> np.ndarray:
+        """Multi-band blending via pirâmide laplaciana em poucos níveis (padrão 3).
+
+        Funde frequências baixas (iluminação global/gradiente de pele) em uma faixa larga
+        e frequências altas (poros, fios de cabelo, rugas) em uma faixa estreita, eliminando
+        costuras visíveis nas bordas.
+        """
+        f_img = fake_roi.astype(np.float32)
+        o_img = orig_roi.astype(np.float32)
+        m_img = alpha_mask.astype(np.float32)
+        if m_img.ndim == 2:
+            m_img = m_img[..., np.newaxis]
+
+        h, w = f_img.shape[:2]
+        eff_levels = max(1, min(int(levels), int(np.floor(np.log2(max(2, min(h, w))))) - 1))
+        if eff_levels <= 1:
+            return np.clip(o_img * (1.0 - m_img) + f_img * m_img, 0.0, 255.0).astype(np.uint8)
+
+        gp_f = [f_img]
+        gp_o = [o_img]
+        gp_m = [m_img]
+        for _ in range(eff_levels - 1):
+            gp_f.append(cv2.pyrDown(gp_f[-1]))
+            gp_o.append(cv2.pyrDown(gp_o[-1]))
+            down_m = cv2.pyrDown(gp_m[-1])
+            if down_m.ndim == 2:
+                down_m = down_m[..., np.newaxis]
+            gp_m.append(down_m)
+
+        lp_f: list[np.ndarray] = []
+        lp_o: list[np.ndarray] = []
+        for i in range(eff_levels - 1):
+            size_i = (gp_f[i].shape[1], gp_f[i].shape[0])
+            up_f = cv2.pyrUp(gp_f[i + 1], dstsize=size_i)
+            up_o = cv2.pyrUp(gp_o[i + 1], dstsize=size_i)
+            lp_f.append(gp_f[i] - up_f)
+            lp_o.append(gp_o[i] - up_o)
+        lp_f.append(gp_f[-1])
+        lp_o.append(gp_o[-1])
+
+        blended_pyr: list[np.ndarray] = []
+        for lf, lo, gm in zip(lp_f, lp_o, gp_m):
+            blended_pyr.append(lo * (1.0 - gm) + lf * gm)
+
+        reconstructed = blended_pyr[-1]
+        for i in range(eff_levels - 2, -1, -1):
+            size_i = (blended_pyr[i].shape[1], blended_pyr[i].shape[0])
+            reconstructed = cv2.pyrUp(reconstructed, dstsize=size_i) + blended_pyr[i]
+
+        return np.clip(reconstructed, 0.0, 255.0).astype(np.uint8)
+
+    @staticmethod
+    def lowfreq_border_blend(
+        fake_roi: np.ndarray,
+        orig_roi: np.ndarray,
+        alpha_mask: np.ndarray,
+    ) -> np.ndarray:
+        """Blending rápido com correção de baixa frequência na faixa de borda da máscara.
+
+        Iguala o gradiente de iluminação local entre ``fake_roi`` e ``orig_roi`` onde
+        ``0 < alpha < 1`` (peso máximo em ``alpha = 0.5``) usando um blur gaussiano amplo.
+        """
+        f_img = fake_roi.astype(np.float32)
+        o_img = orig_roi.astype(np.float32)
+        m_img = alpha_mask.astype(np.float32)
+        if m_img.ndim == 2:
+            m_img = m_img[..., np.newaxis]
+
+        h, w = f_img.shape[:2]
+        small_w, small_h = max(16, w // 4), max(16, h // 4)
+        low_f_small = cv2.GaussianBlur(
+            cv2.resize(f_img, (small_w, small_h), interpolation=cv2.INTER_AREA), (0, 0), sigmaX=4.0, sigmaY=4.0
+        )
+        low_o_small = cv2.GaussianBlur(
+            cv2.resize(o_img, (small_w, small_h), interpolation=cv2.INTER_AREA), (0, 0), sigmaX=4.0, sigmaY=4.0
+        )
+        diff_low = cv2.resize(low_o_small - low_f_small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        border_band = np.clip(4.0 * m_img * (1.0 - m_img), 0.0, 1.0)
+        f_corrected = np.clip(f_img + diff_low * border_band, 0.0, 255.0)
+        blended = o_img * (1.0 - m_img) + f_corrected * m_img
+        return np.clip(blended, 0.0, 255.0).astype(np.uint8)
+
     def composite(
         self,
         original_frame: np.ndarray,
@@ -209,6 +307,7 @@ class FaceCompositor:
         occluder_mask: np.ndarray | None = None,
         skin_mask: np.ndarray | None = None,
         enable_border_lowfreq: bool = ENABLE_BORDER_LOWFREQ_COLOR,
+        blend_mode: str | None = None,
     ) -> np.ndarray:
         """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves.
 
@@ -271,8 +370,24 @@ class FaceCompositor:
         warped_mask = cv2.warpAffine(mask, local_inv, (roi_w, roi_h), borderValue=0.0, flags=cv2.INTER_LINEAR)
 
         alpha = np.clip(warped_mask[..., np.newaxis] * float(blend_intensity), 0.0, 1.0)
-        roi_orig = original_frame[y1:y2, x1:x2].astype(np.float32)
+        roi_orig = original_frame[y1:y2, x1:x2]
+        mode = (blend_mode or self.blend_mode).lower()
+
+        t_blend0 = time.perf_counter()
+        if mode == "laplacian":
+            blended_roi = self.laplacian_pyramid_blend(
+                warped_fake, roi_orig, alpha, levels=self.pyramid_levels
+            )
+        elif mode == "lowfreq_border":
+            blended_roi = self.lowfreq_border_blend(warped_fake, roi_orig, alpha)
+        else:
+            roi_orig_f = roi_orig.astype(np.float32)
+            blended_roi = np.clip(
+                roi_orig_f * (1.0 - alpha) + warped_fake.astype(np.float32) * alpha, 0, 255
+            ).astype(np.uint8)
+        self.last_blend_ms = (time.perf_counter() - t_blend0) * 1000.0
+
         out = original_frame.copy()
-        out[y1:y2, x1:x2] = np.clip(roi_orig * (1.0 - alpha) + warped_fake.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+        out[y1:y2, x1:x2] = blended_roi
         return out
 

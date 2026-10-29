@@ -1,13 +1,35 @@
 """Configuração do ONNX Runtime de acordo com o dispositivo escolhido.
 
 Detalhe importante no Windows: o ``onnxruntime-gpu`` precisa das DLLs do
-CUDA e do cuDNN. O PyTorch com CUDA já traz essas DLLs; importar o
-``torch`` antes do ``onnxruntime`` faz com que elas sejam carregadas no
-processo e reaproveitadas, sem instalar o CUDA Toolkit separadamente.
+CUDA 12 e do cuDNN 9. Quando executamos no ambiente Python normal, o PyTorch
+já traz essas DLLs em ``torch/lib``; quando empacotado pelo instalador,
+essas DLLs ficam em ``_internal/torch/lib`` (ou ``_internal/cuda_libs``).
 """
 from __future__ import annotations
 
-import torch  # noqa: F401  — precisa vir antes do onnxruntime (ver docstring)
+import os
+import sys
+from pathlib import Path
+
+# Registra os diretórios de DLLs do CUDA/cuDNN antes de importar onnxruntime
+_candidate_dll_dirs: list[Path] = []
+if getattr(sys, "frozen", False):
+    _base = Path(sys.executable).resolve().parent / "_internal"
+    _candidate_dll_dirs.extend([_base / "torch" / "lib", _base / "cuda_libs", _base])
+
+for _d in _candidate_dll_dirs:
+    if _d.is_dir():
+        try:
+            os.add_dll_directory(str(_d))
+        except Exception:
+            pass
+        os.environ["PATH"] = str(_d) + os.pathsep + os.environ.get("PATH", "")
+
+try:
+    import torch  # noqa: F401
+except Exception:
+    pass
+
 import onnxruntime as ort
 
 from src.inference.device_manager import DeviceManager

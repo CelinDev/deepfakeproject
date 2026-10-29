@@ -9,6 +9,7 @@ dist/
 
 # Ferramentas locais e binários
 tools/ffmpeg/
+tools/7z/
 
 # Modelos neurais e pesos pesados (devem ser baixados via scripts/download_models.py)
 models/*.onnx

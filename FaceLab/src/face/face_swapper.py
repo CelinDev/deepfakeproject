@@ -125,6 +125,8 @@ class INSwapperModel(FaceSwapper):
         self.output_name = self.session.get_outputs()[0].name
         self.input_size = self.spec.input_size
         self.work_size = 512  # Super-amostragem de alinhamento e composição (512x512)
+        self._latent_cache_key: bytes | None = None
+        self._latent_cache_val: np.ndarray | None = None
 
     @staticmethod
     def _resolve_spec_and_path(
@@ -194,14 +196,22 @@ class INSwapperModel(FaceSwapper):
         return bgr
 
     def prepare_latent(self, embedding: np.ndarray) -> np.ndarray:
-        """Prepara o vetor latente de identidade (projeta na matriz emap se o modelo exigir)."""
-        latent = np.asarray(embedding, dtype=np.float32).reshape((1, -1))
+        """Prepara e cacheia o vetor latente de identidade (``latent @ emap`` normalizado por rosto de origem)."""
+        emb_f = np.ascontiguousarray(embedding, dtype=np.float32).reshape((1, -1))
+        key = emb_f.tobytes()
+        if self._latent_cache_key == key and self._latent_cache_val is not None:
+            return self._latent_cache_val
+
+        latent = emb_f
         if self.emap is not None:
             latent = np.dot(latent, self.emap)
         norm = float(np.linalg.norm(latent))
         if norm > 1e-6:
             latent = latent / norm
-        return latent.astype(np.float32)
+        out = latent.astype(np.float32)
+        self._latent_cache_key = key
+        self._latent_cache_val = out
+        return out
 
     def swap(
         self,

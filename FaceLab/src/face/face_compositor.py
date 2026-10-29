@@ -29,6 +29,8 @@ class FaceCompositor:
     """Combina o rosto sintetizado com o quadro original."""
 
     _ellipse_cache: dict[tuple[int, int], np.ndarray] = {}
+    _skin_roi_cache: dict[tuple[int, int], np.ndarray] = {}
+    _kernel_cache: dict[tuple[int, int], np.ndarray] = {}
 
     def __init__(
         self,
@@ -89,6 +91,39 @@ class FaceCompositor:
         cls._ellipse_cache[key] = ellipse
         return ellipse
 
+    @classmethod
+    def get_cached_kernel(cls, shape: int, ksize: int) -> np.ndarray:
+        """Retorna elemento estruturante morfológico pré-calculado e cacheado."""
+        key = (int(shape), int(ksize))
+        cached = cls._kernel_cache.get(key)
+        if cached is not None:
+            return cached
+        kernel = cv2.getStructuringElement(shape, (ksize, ksize))
+        cls._kernel_cache[key] = kernel
+        return kernel
+
+    @classmethod
+    def get_cached_skin_roi(cls, height: int, width: int) -> np.ndarray:
+        """Retorna máscara booleana elíptica da zona central da pele cacheada."""
+        key = (int(height), int(width))
+        cached = cls._skin_roi_cache.get(key)
+        if cached is not None:
+            return cached
+        skin_roi = np.zeros((height, width), dtype=np.uint8)
+        cv2.ellipse(
+            skin_roi,
+            (width // 2, int(height * 0.52)),
+            (int(width * 0.32), int(height * 0.36)),
+            0,
+            0,
+            360,
+            255,
+            -1,
+        )
+        roi_bool = skin_roi > 0
+        cls._skin_roi_cache[key] = roi_bool
+        return roi_bool
+
     def build_aligned_mask(
         self,
         crop_h: int,
@@ -131,7 +166,7 @@ class FaceCompositor:
         scaled_erode = int(round(self.erode_amount * mask_scale))
         if scaled_erode > 0:
             erode_k = scaled_erode if scaled_erode % 2 != 0 else scaled_erode + 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+            kernel = self.get_cached_kernel(cv2.MORPH_ELLIPSE, erode_k)
             mask_ms = cv2.erode(mask_ms, kernel, iterations=1)
 
         scaled_blur = max(3, int(round(self.blur_amount * mask_scale)))
@@ -183,11 +218,9 @@ class FaceCompositor:
                 roi_bool = candidate_bool
 
         if roi_bool is None:
-            skin_roi = np.zeros((h, w), dtype=np.uint8)
-            cv2.ellipse(skin_roi, (w // 2, int(h * 0.52)), (int(w * 0.32), int(h * 0.36)), 0, 0, 360, 255, -1)
-            roi_bool = skin_roi > 0
+            roi_bool = self.get_cached_skin_roi(h, w)
             if sm_resized is None:
-                sm_resized = (skin_roi.astype(np.float32) / 255.0)
+                sm_resized = roi_bool.astype(np.float32)
 
         s_pixels = src_lab[roi_bool]
         t_pixels = tgt_lab[roi_bool]

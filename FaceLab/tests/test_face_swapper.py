@@ -220,6 +220,37 @@ def test_swapper_model_specs_and_fallback_to_inswapper_128() -> None:
     assert np.allclose(restored_bgr, 255)
 
 
+def test_constant_caches_latent_emap_ellipse_and_kernels() -> None:
+    """Garante que latent @ emap, máscara elíptica base, skin ROI e kernels morfológicos sejam cacheados."""
+    from src.face.face_swapper import SWAPPER_MODEL_SPECS
+
+    # 1. Cache de latent @ emap
+    dummy_swapper = INSwapperModel.__new__(INSwapperModel)
+    dummy_swapper.spec = SWAPPER_MODEL_SPECS["inswapper_128"]
+    dummy_swapper.emap = np.eye(512, dtype=np.float32) * 2.0
+    dummy_swapper._latent_cache_key = None
+    dummy_swapper._latent_cache_val = None
+
+    emb = np.ones(512, dtype=np.float32) / np.sqrt(512.0)
+    lat1 = dummy_swapper.prepare_latent(emb)
+    lat2 = dummy_swapper.prepare_latent(emb)
+    assert lat1 is lat2  # Mesma instância retornada do cache
+
+    # 2. Cache de elipse base, skin ROI e kernel morfológico
+    e1 = FaceCompositor.get_cached_ellipse(256, 256)
+    e2 = FaceCompositor.get_cached_ellipse(256, 256)
+    assert e1 is e2
+
+    s1 = FaceCompositor.get_cached_skin_roi(256, 256)
+    s2 = FaceCompositor.get_cached_skin_roi(256, 256)
+    assert s1 is s2
+
+    k1 = FaceCompositor.get_cached_kernel(cv2.MORPH_ELLIPSE, 9)
+    k2 = FaceCompositor.get_cached_kernel(cv2.MORPH_ELLIPSE, 9)
+    assert k1 is k2
+
+
+
 
 
 

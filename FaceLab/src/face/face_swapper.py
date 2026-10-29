@@ -74,6 +74,7 @@ class INSwapperModel(FaceSwapper):
         self.input_names = [inp.name for inp in inputs]
         self.output_name = self.session.get_outputs()[0].name
         self.input_size = (128, 128)
+        self.work_size = 512  # Super-amostragem de alinhamento e composição (512x512)
 
     def swap(
         self,
@@ -91,14 +92,15 @@ class INSwapperModel(FaceSwapper):
         if source_face.embedding is None:
             raise ValueError("O rosto de origem (source_face) precisa conter um embedding facial válido.")
 
-        # 1. Alinha o rosto de destino
-        aligned_crop, affine_m = FaceAligner.align_crop(
-            target_frame, target_face.landmarks, crop_size=self.input_size[0]
+        # 1. Alinha o rosto de destino em alta definição (512x512) para preservar poros, dentes e nitidez
+        aligned_hi, affine_hi = FaceAligner.align_crop(
+            target_frame, target_face.landmarks, crop_size=self.work_size
         )
+        aligned_128 = cv2.resize(aligned_hi, self.input_size, interpolation=cv2.INTER_AREA)
 
         # 2. Prepara o blob de imagem (BGR -> RGB, escala 1/255, NCHW)
         blob = cv2.dnn.blobFromImage(
-            aligned_crop,
+            aligned_128,
             1.0 / 255.0,
             self.input_size,
             (0.0, 0.0, 0.0),
@@ -112,33 +114,39 @@ class INSwapperModel(FaceSwapper):
         if norm > 1e-6:
             latent /= norm
 
-        # 4. Inferência ONNX
+        # 4. Inferência ONNX (128x128 nativo da rede INSwapper)
         preds = self.session.run(
             [self.output_name],
             {self.input_names[0]: blob, self.input_names[1]: latent},
         )[0]
 
-        # 5. Converte a saída NCHW (RGB) para HWC (BGR [0..255])
+        # 5. Converte a saída NCHW (RGB) para HWC (BGR [0..255]) e faz upsampling Lanczos4 para 512x512
         img_fake = preds.transpose((0, 2, 3, 1))[0]
-        fake_bgr = np.clip(img_fake * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
+        fake_128 = np.clip(img_fake * 255.0, 0, 255).astype(np.uint8)[:, :, ::-1]
+        fake_bgr = cv2.resize(fake_128, (self.work_size, self.work_size), interpolation=cv2.INTER_LANCZOS4)
 
         # 6. Se fornecido source_crop (ex: tom esverdeado/mortiço de zumbi da fonte),
         # transfere a paleta de cores característica da fonte antes da composição
         if source_crop is not None:
-            fake_bgr = self.compositor.match_color_hist(fake_bgr, source_crop, smoother=smoother)
+            src_hi = (
+                cv2.resize(source_crop, (self.work_size, self.work_size), interpolation=cv2.INTER_LANCZOS4)
+                if source_crop.shape[0] != self.work_size
+                else source_crop
+            )
+            fake_bgr = self.compositor.match_color_hist(fake_bgr, src_hi, smoother=smoother)
             # Evita que o compositor sobreponha a iluminação do alvo em cima do tom da fonte
             color_correct = False
 
-        # 7. Restauração facial / Super-resolução opcional (GFPGAN)
+        # 7. Restauração facial / Super-resolução opcional (GFPGAN já opera nativamente em 512x512!)
         if enhancer is not None:
             fake_bgr = enhancer.enhance(fake_bgr)
 
-        # 8. Composição sobre o frame original
+        # 8. Composição em alta resolução (512x512) sobre o frame original
         return self.compositor.composite(
             original_frame=target_frame,
             fake_crop=fake_bgr,
-            aligned_original_crop=aligned_crop,
-            affine_matrix=affine_m,
+            aligned_original_crop=aligned_hi,
+            affine_matrix=affine_hi,
             color_correct=color_correct,
             smoother=smoother,
             blend_intensity=blend_intensity,

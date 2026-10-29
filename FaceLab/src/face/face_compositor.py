@@ -26,24 +26,54 @@ class FaceCompositor:
         target: np.ndarray,
         smoother: TemporalSmoother | None = None,
     ) -> np.ndarray:
-        """Ajusta o tom de cor e brilho do crop sintetizado com estabilização temporal de iluminação."""
-        src_f = source.astype(np.float32)
-        tgt_f = target.astype(np.float32)
+        """Transferência perceptual de cor no espaço CIE LAB restrita à zona central da pele.
 
-        s_mean = src_f.mean(axis=(0, 1))
-        s_std = src_f.std(axis=(0, 1)) + 1e-6
-        t_mean = tgt_f.mean(axis=(0, 1))
-        t_std = tgt_f.std(axis=(0, 1)) + 1e-6
+        Evita que sombras de fundo ou cabelos escuros nas bordas do crop 128x128
+        contaminem o tom de pele ou a iluminação do rosto trocado.
+        """
+        src_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype(np.float32)
+        if target.shape[:2] != source.shape[:2]:
+            target = cv2.resize(target, (source.shape[1], source.shape[0]), interpolation=cv2.INTER_LINEAR)
+        tgt_lab = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+        h, w = source.shape[:2]
+        skin_roi = np.zeros((h, w), dtype=np.uint8)
+        cv2.ellipse(skin_roi, (w // 2, int(h * 0.52)), (int(w * 0.32), int(h * 0.36)), 0, 0, 360, 255, -1)
+        roi_bool = skin_roi > 0
+
+        s_pixels = src_lab[roi_bool]
+        t_pixels = tgt_lab[roi_bool]
+
+        s_mean = s_pixels.mean(axis=0)
+        s_std = s_pixels.std(axis=0) + 1e-6
+        t_mean = t_pixels.mean(axis=0)
+        t_std = t_pixels.std(axis=0) + 1e-6
 
         if smoother is not None:
             s_mean, s_std, t_mean, t_std = smoother.smooth_color_stats(s_mean, s_std, t_mean, t_std)
 
-        matched = np.zeros_like(src_f)
+        matched_lab = np.zeros_like(src_lab)
         for c in range(3):
-            channel = ((src_f[..., c] - s_mean[c]) / s_std[c]) * t_std[c] + t_mean[c]
-            matched[..., c] = np.clip(channel, 0, 255)
+            # No canal L (luminância), transfere 90% do contraste real; nos canais A/B (cor), 85% para naturalidade
+            scale = 0.90 if c == 0 else 0.85
+            std_ratio = 1.0 + scale * ((t_std[c] / s_std[c]) - 1.0)
+            channel = (src_lab[..., c] - s_mean[c]) * std_ratio + (scale * t_mean[c] + (1.0 - scale) * s_mean[c])
+            matched_lab[..., c] = np.clip(channel, 0, 255)
 
-        return matched.astype(np.uint8)
+        return cv2.cvtColor(matched_lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+    @staticmethod
+    def inject_skin_microtexture(fake_crop: np.ndarray, original_crop: np.ndarray, strength: float = 0.22) -> np.ndarray:
+        """Transfere a microtextura de poros e iluminação fina do rosto real para o crop."""
+        if original_crop.shape[:2] != fake_crop.shape[:2]:
+            original_crop = cv2.resize(
+                original_crop, (fake_crop.shape[1], fake_crop.shape[0]), interpolation=cv2.INTER_CUBIC
+            )
+        orig_f = original_crop.astype(np.float32)
+        low_freq = cv2.GaussianBlur(orig_f, (0, 0), sigmaX=1.6, sigmaY=1.6)
+        high_freq = orig_f - low_freq  # Detalhe puro de poros, pelos faciais finos e micro-sombras
+        detailed = fake_crop.astype(np.float32) + high_freq * float(strength)
+        return np.clip(detailed, 0, 255).astype(np.uint8)
 
     def composite(
         self,
@@ -55,31 +85,52 @@ class FaceCompositor:
         smoother: TemporalSmoother | None = None,
         blend_intensity: float = 1.0,
     ) -> np.ndarray:
-        """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves."""
+        """Projeta o fake_crop sobre o original_frame com blending anatômico e bordas super suaves.
+
+        Suporta recortes de 128x128, 256x256 e 512x512, escalando automaticamente a matriz
+        afim pelo fator ``s = fake_crop.shape[1] / aligned_original_crop.shape[1]`` antes de inverter.
+        """
         h, w = original_frame.shape[:2]
         crop_h, crop_w = fake_crop.shape[:2]
+        orig_crop_h, orig_crop_w = aligned_original_crop.shape[:2]
 
         if color_correct:
             fake_crop = self.match_color_hist(fake_crop, aligned_original_crop, smoother=smoother)
+            fake_crop = self.inject_skin_microtexture(fake_crop, aligned_original_crop, strength=0.22)
 
-        # Matriz inversa (espaço do crop -> espaço do quadro original)
-        inv_affine = cv2.invertAffineTransform(affine_matrix)
+        # Fator de escala entre o fake_crop (ex: 512px do GFPGAN) e o aligned_original_crop (ex: 128px)
+        scale_factor = float(crop_w) / float(orig_crop_w)
+        m3 = np.vstack([affine_matrix.astype(np.float64), [0.0, 0.0, 1.0]])
+        s_mat = np.diag([scale_factor, scale_factor, 1.0])
+        scaled_m = (s_mat @ m3)[:2, :].astype(np.float32)
 
-        # Máscara anatômica refinada:
-        # Cobre a estrutura facial até a raiz do cabelo sem transbordar para o fundo.
+        # Matriz inversa (espaço do fake_crop -> espaço do quadro original)
+        inv_affine = cv2.invertAffineTransform(scaled_m)
+
+        # Máscara anatômica expandida:
+        # Cobre toda a estrutura facial (maxilar, bochechas e testa) com mais liberdade,
+        # sem sufocar os traços do rosto trocado.
         mask = np.zeros((crop_h, crop_w), dtype=np.float32)
-        center = (crop_w // 2, int(crop_h * 0.49))
-        axes = (int(crop_w * 0.40), int(crop_h * 0.45))
+        center = (crop_w // 2, int(crop_h * 0.50))
+        axes = (int(crop_w * 0.44), int(crop_h * 0.48))
         cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
 
-        # Suavização gaussiana
-        blur_k = self.blur_amount if self.blur_amount % 2 != 0 else self.blur_amount + 1
+        # Escala erode_amount e blur_amount proporcionalmente ao tamanho do fake_crop
+        resolution_scale = max(1.0, float(crop_w) / float(orig_crop_w), float(crop_w) / 128.0)
+        scaled_erode = int(round(self.erode_amount * resolution_scale))
+        if scaled_erode > 0:
+            erode_k = scaled_erode if scaled_erode % 2 != 0 else scaled_erode + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+            mask = cv2.erode(mask, kernel, iterations=1)
+
+        scaled_blur = max(3, int(round(self.blur_amount * resolution_scale)))
+        blur_k = scaled_blur if scaled_blur % 2 != 0 else scaled_blur + 1
         mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
 
-        # Supressão de cauda/halo (Anti-Aura): corta valores residuais muito baixos nas bordas
-        # que provocavam vazamento esverdeado/aura fora do esquadro do rosto
-        mask = np.clip((mask - 0.08) / (0.92 - 0.08), 0.0, 1.0)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        # Supressão leve de cauda/halo (Anti-Aura): corta apenas resíduos imperceptíveis (<3%)
+        mask = np.clip((mask - 0.03) / (0.97 - 0.03), 0.0, 1.0)
+        fine_k = max(3, int(round(5 * resolution_scale))) | 1
+        mask = cv2.GaussianBlur(mask, (fine_k, fine_k), 0)
 
         # OTIMIZAÇÃO (Fase 6): calcula a Região de Interesse (ROI) onde o rosto se projeta no frame.
         # Em vez de aplicar warpAffine e mistura alfa na imagem inteira de 1920x1080 (que custa ~100ms),

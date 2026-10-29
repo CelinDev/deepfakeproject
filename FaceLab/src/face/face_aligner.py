@@ -42,9 +42,8 @@ class FaceAligner:
         dst = ARCFACE_DST * ratio
         dst[:, 0] += diff_x
 
-        # Usa SimilarityTransform do scikit-image sem deprecation warnings
-        tform = trans.SimilarityTransform()
-        tform.estimate(landmarks, dst)
+        # Usa SimilarityTransform.from_estimate do scikit-image sem deprecation warnings
+        tform = trans.SimilarityTransform.from_estimate(landmarks, dst)
         return tform.params[0:2, :].astype(np.float32)
 
     @classmethod

@@ -73,14 +73,16 @@ class FaceEnhancer:
         return cv2.addWeighted(sharpened, 0.75, edge_detail, 0.25, 0)
 
     def enhance(self, face_bgr: np.ndarray) -> np.ndarray:
-        """Restaura e aumenta a nitidez de um recorte facial BGR."""
-        orig_h, orig_w = face_bgr.shape[:2]
-
-        # 1. Redimensiona para 512x512
-        resized = cv2.resize(face_bgr, self.input_size, interpolation=cv2.INTER_CUBIC)
+        """Restaura e retorna o recorte facial BGR em 512x512 (resolução nativa do GFPGAN)."""
+        # 1. Redimensiona a entrada para 512x512
+        resized_512 = (
+            face_bgr
+            if face_bgr.shape[:2] == self.input_size
+            else cv2.resize(face_bgr, self.input_size, interpolation=cv2.INTER_CUBIC)
+        )
 
         # 2. BGR -> RGB e normalização para [-1.0, 1.0]
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(resized_512, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         norm = (rgb - 0.5) / 0.5  # Escala [-1, 1]
 
         # 3. Transpõe para NCHW: (1, 3, 512, 512)
@@ -89,18 +91,16 @@ class FaceEnhancer:
         # 4. Inferência GFPGAN
         output = self.session.run([self.output_name], {self.input_name: blob})[0]
 
-        # 5. Desnormalização [-1, 1] -> [0, 255] e NCHW -> HWC
+        # 5. Desnormalização [-1, 1] -> [0, 255] e NCHW -> HWC (512x512)
         img_out = output[0].transpose((1, 2, 0))
         img_out = np.clip((img_out * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-        enhanced_bgr = cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR)
+        enhanced_512 = cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR)
 
-        # 6. Redimensiona de volta para a resolução original do crop
-        enhanced_orig = cv2.resize(enhanced_bgr, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
-
-        # 7. Mistura proporcional opcional para preservar naturalidade
+        # 6. Mistura proporcional em 512x512 para preservar naturalidade sem perder resolução
         if self.blend_ratio < 1.0:
-            blended = cv2.addWeighted(enhanced_orig, self.blend_ratio, face_bgr, 1.0 - self.blend_ratio, 0)
-            return blended
+            return cv2.addWeighted(
+                enhanced_512, self.blend_ratio, resized_512, 1.0 - self.blend_ratio, 0
+            )
 
-        return enhanced_orig
+        return enhanced_512
 

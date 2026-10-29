@@ -50,6 +50,32 @@ def test_face_compositor_preserves_dimensions() -> None:
     assert result.dtype == np.uint8
 
 
+@pytest.mark.parametrize("fake_size", [128, 256, 512])
+def test_face_compositor_supports_multi_resolution_crops(fake_size: int) -> None:
+    """Garante que o compositor escale a matriz afim para crops de 128, 256 e 512."""
+    compositor = FaceCompositor(blur_amount=15, erode_amount=3)
+    frame = np.zeros((300, 300, 3), dtype=np.uint8)
+    landmarks = np.array(
+        [[110.0, 120.0], [190.0, 120.0], [150.0, 155.0], [120.0, 195.0], [180.0, 195.0]],
+        dtype=np.float32,
+    )
+    aligned_128, m_128 = FaceAligner.align_crop(frame, landmarks, crop_size=128)
+    fake_crop = np.full((fake_size, fake_size, 3), 240, dtype=np.uint8)
+
+    result = compositor.composite(
+        original_frame=frame,
+        fake_crop=fake_crop,
+        aligned_original_crop=aligned_128,
+        affine_matrix=m_128,
+        color_correct=False,
+    )
+    assert result.shape == frame.shape
+    # O centro do rosto (150, 155) deve ter recebido o valor alto do fake_crop em todas as resoluções
+    assert result[155, 150, 0] > 200
+    # As bordas distantes do quadro (10, 10) devem permanecer intactas (0)
+    assert result[10, 10, 0] == 0
+
+
 MODEL_PATH = MODELS_DIR / "inswapper_128.onnx"
 
 

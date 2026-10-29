@@ -37,3 +37,26 @@ def test_tensor_na_gpu() -> None:
     assert (x @ x).sum().item() == 1000.0 * 1000 * 1000
     dm.release_memory()
 
+
+def test_onnx_providers_cudnn_heuristic_and_iobinding() -> None:
+    """Garante que onnx_providers configure cudnn_conv_algo_search='HEURISTIC' e run_with_iobinding funcione."""
+    from unittest.mock import MagicMock
+    import numpy as np
+    from src.inference.model_loader import onnx_providers, run_with_iobinding
+
+    dm = DeviceManager(DevicePreference.AUTO)
+    provs = onnx_providers(dm, cudnn_conv_algo_search="HEURISTIC")
+    if dm.info.is_cuda and isinstance(provs[0], tuple):
+        name, opts = provs[0]
+        assert name == "CUDAExecutionProvider"
+        assert opts.get("cudnn_conv_algo_search") == "HEURISTIC"
+
+    # Testa fallback limpo e execução do run_with_iobinding em sessão mockada
+    fake_sess = MagicMock()
+    expected = np.ones((1, 3, 128, 128), dtype=np.float32)
+    fake_sess.run.return_value = [expected]
+    del fake_sess.io_binding  # Simula sessão sem io_binding -> cai para session.run
+    res = run_with_iobinding(fake_sess, "output", {"in": np.zeros((1, 3, 128, 128), dtype=np.float32)})
+    assert res.shape == (1, 3, 128, 128)
+
+

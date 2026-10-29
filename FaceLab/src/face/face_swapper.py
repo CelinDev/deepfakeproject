@@ -39,7 +39,7 @@ from src.face.face_enhancer import FaceEnhancer
 from src.face.face_parser import FaceParser
 from src.face.temporal_smoother import TemporalSmoother
 from src.inference.device_manager import DeviceManager
-from src.inference.model_loader import onnx_providers
+from src.inference.model_loader import onnx_providers, run_with_iobinding
 
 logger = logging.getLogger(__name__)
 
@@ -256,11 +256,14 @@ class INSwapperModel(FaceSwapper):
         blob = self.preprocess_crop(aligned_hi)
         latent = self.prepare_latent(source_face.embedding)
 
-        # 3. Inferência ONNX acelerada
-        preds = self.session.run(
-            [self.output_name],
+        # 3. Inferência ONNX acelerada (com IOBinding quando suportado)
+        out_shape = (1, 3, self.input_size[1], self.input_size[0])
+        preds = run_with_iobinding(
+            self.session,
+            self.output_name,
             {self.target_input_name: blob, self.source_input_name: latent},
-        )[0]
+            output_shape=out_shape,
+        )
 
         # 4. Converte a saída NCHW para BGR [0..255] e faz upsampling Lanczos4 para 512x512
         fake_native = self.postprocess_output(preds)
